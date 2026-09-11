@@ -1,6 +1,6 @@
 # GoLang Web Server
 
-A fast static file server written in Go. Pick a folder, run a few commands, and your site is live.
+A fast static file server written in Go. run a few commands, and your site is live.
 
 ---
 
