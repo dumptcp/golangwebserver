@@ -121,8 +121,8 @@ Can help with gain more performance
 ```bash
 ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
 ```
----
 
+---
 - This is a **static** server. It serves HTML, CSS, JS, images, and other files. It does **not** run PHP, Python, or any other server-side code.
 - If you update a file while using `cache-all`, you may need to clear your browser cache or Cloudflare cache to see the change.
 - `cache-assets-only` is the safest choice for most people.
