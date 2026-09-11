@@ -106,11 +106,6 @@ Start the server:
 sudo go run main.go
 ```
 
-| Default | What it does |
-|---|---|---|
-| `ROOT` | `/root/www` | Folder with your website files |
-| `PORT` | `80` | Port the server listens on |
-
 ---
 
 ## Notes
