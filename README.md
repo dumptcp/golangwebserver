@@ -9,10 +9,6 @@ A fast static file server written in Go. Pick a folder, run a few commands, and 
 Run these in your terminal, one at a time:
 
 ```bash
-sudo snap install go --classic
-```
-
-```bash
 sudo apt update
 ```
 
@@ -28,6 +24,15 @@ sudo apt autoremove -y
 
 ```bash
 sudo reboot
+```
+When the server is back you can continue
+
+```bash
+sudo snap install snapd
+```
+
+```bash
+sudo snap install go --classic
 ```
 
 Reconnect to your server after it comes back up. You now have Go installed and your system is up to date.
@@ -84,11 +89,7 @@ go mod tidy
 Load the included `nftables.conf`:
 
 ```bash
-chmod 777 nftables.conf
-```
-
-```bash
-./nftables.conf
+sudo nft -f nftables.conf
 ```
 
 Verify it's active:
