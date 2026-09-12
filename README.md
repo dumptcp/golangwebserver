@@ -86,10 +86,10 @@ go mod tidy
 
 ## Step 5 — Open the firewall for Cloudflare
 
-Load the included `nftables.conf`:
+Load the included `cloudflare.conf`:
 
 ```bash
-sudo nft -f nftables.conf
+sudo nft -f cloudflare.conf
 ```
 
 Verify it's active:
