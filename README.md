@@ -28,7 +28,7 @@ sudo reboot
 When the server is back you can continue
 
 ```bash
-sudo snap install snapd
+sudo apt install snapd
 ```
 
 ```bash
