@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,12 @@ func main() {
 }
 
 func serve(c fiber.Ctx) error {
+	// Fiber gives the raw path, so "/my%20file.html" would never match a file
+	// named "my file.html". Decode it first; keep the raw path if it is malformed.
 	p := c.Path()
+	if u, err := url.PathUnescape(p); err == nil {
+		p = u
+	}
 
 	if strings.HasSuffix(p, "/index.html") {
 		c.Set("Location", strings.TrimSuffix(p, "index.html"))
