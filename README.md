@@ -1,6 +1,6 @@
 # Golang Web Server
 
-A fast static file server written in Golang (Fiberv3/gofiber.io). run a few commands, and your site is live.
+A fast static file server written in Golang ([Fiber v3](https://gofiber.io)). Run a few commands, and your site is live.
 
 ---
 
@@ -25,7 +25,8 @@ sudo apt autoremove -y
 ```bash
 sudo reboot
 ```
-When the server is back you can continue
+
+Reconnect to your server after it comes back up, then continue:
 
 ```bash
 sudo apt install snapd
@@ -35,7 +36,7 @@ sudo apt install snapd
 sudo snap install go --classic
 ```
 
-Reconnect to your server after it comes back up. You now have Go installed and your system is up to date.
+You now have Go installed and your system is up to date.
 
 ---
 
@@ -64,13 +65,20 @@ Each folder is a complete, standalone server. Pick **one**:
 
 ## Step 3 — Add your website files
 
-make sure webserver backend is in /root while frontend files is in the /root/www directory
+Put the `main.go` from the folder you picked in `/root`, and your `index.html` and other site files in `/root/www`:
+
+```
+/root/
+├── main.go
+└── www/
+    └── index.html
+```
 
 ---
 
 ## Step 4 — Golang Dependencies
 
-Then run these two commands, one at a time:
+Run these two commands, one at a time:
 
 ```bash
 go mod init webserver
@@ -98,6 +106,8 @@ Verify it's active:
 sudo nft list ruleset
 ```
 
+---
+
 ## Step 6 — Run the server
 
 Start the server:
@@ -105,6 +115,8 @@ Start the server:
 ```bash
 sudo go run main.go
 ```
+
+Press `Ctrl+C` to stop it.
 
 ---
 
@@ -116,16 +128,19 @@ To clear nftables when you want:
 sudo nft flush ruleset
 ```
 
-Can help with gain more performance
+Can help gain more performance (run it before starting the server):
 
 ```bash
 ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
 ```
 
 ---
+
 - This is a **static** server. It serves HTML, CSS, JS, images, and other files. It does **not** run PHP, Python, or any other server-side code.
 - If you update a file while using `cache-all`, you may need to clear your browser cache or Cloudflare cache to see the change.
 - `cache-assets-only` is the safest choice for most people.
+
+---
 
 ## License
 
