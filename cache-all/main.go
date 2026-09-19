@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"log"
 	"mime"
@@ -48,7 +50,7 @@ const (
 )
 
 type file struct {
-	ctype, cc        string
+	ctype, cc, etag  string
 	body, br, gz, zs []byte
 }
 
@@ -97,6 +99,13 @@ func serve(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 
+	if inm := c.Get("If-None-Match"); inm != "" && strings.Contains(inm, f.etag) {
+		c.Set("ETag", f.etag)
+		c.Set("Cache-Control", f.cc)
+		c.Set("Vary", "Accept-Encoding")
+		return c.SendStatus(fiber.StatusNotModified)
+	}
+
 	body, enc := f.body, ""
 	ae := c.Get("Accept-Encoding")
 	switch {
@@ -109,6 +118,7 @@ func serve(c fiber.Ctx) error {
 	}
 
 	h := &c.Response().Header
+	h.Set("ETag", f.etag)
 	h.Set("Cache-Control", f.cc)
 	h.Set("Vary", "Accept-Encoding")
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -189,7 +199,12 @@ func add(rel string, body []byte, ctype string, enc *zstd.Encoder) {
 			ctype = "application/wasm"
 		}
 	}
-	f := &file{ctype: ctype, cc: assetCacheControl, body: body}
+
+	h := fnv.New64a()
+	_, _ = h.Write(body)
+	etag := fmt.Sprintf(`"%016x"`, h.Sum64())
+
+	f := &file{ctype: ctype, cc: assetCacheControl, etag: etag, body: body}
 	if compressible(ctype) {
 		if zs := enc.EncodeAll(body, make([]byte, 0, len(body)/2)); len(zs) > 0 && len(zs) < len(body) {
 			f.zs = zs
