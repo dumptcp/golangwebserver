@@ -70,7 +70,7 @@ Put the `main.go` from the folder you picked in `/root`, and your `index.html` a
 ```
 /root/
 ├── main.go
-└── www/
+└── /root/www/
     └── index.html
 ```
 
