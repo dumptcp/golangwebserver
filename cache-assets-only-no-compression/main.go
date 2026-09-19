@@ -20,7 +20,7 @@ var (
 )
 
 const (
-	htmlCacheControl  = "no-store, no-cache, must-revalidate, max-age=0"
+	htmlCacheControl  = "no-cache, must-revalidate" // stored but re-checked every visit, so ETag/304 works
 	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
 
 	contentSecurityPolicy = "default-src 'self'; " +
@@ -60,7 +60,7 @@ func main() {
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  75 * time.Second,
+		IdleTimeout:  960 * time.Second, // must outlast Cloudflare's 900s connection reuse, or it causes 520s
 	})
 	app.All("/*", serve)
 	log.Printf("listening on %s", listenAddr)
