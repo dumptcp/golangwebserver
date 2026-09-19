@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"log"
 	"mime"
@@ -41,8 +43,8 @@ const (
 )
 
 type file struct {
-	ctype, cc string
-	body      []byte
+	ctype, cc, etag string
+	body            []byte
 }
 
 var files = map[string]*file{}
@@ -85,7 +87,14 @@ func serve(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 
+	if inm := c.Get("If-None-Match"); inm != "" && strings.Contains(inm, f.etag) {
+		c.Set("ETag", f.etag)
+		c.Set("Cache-Control", f.cc)
+		return c.SendStatus(fiber.StatusNotModified)
+	}
+
 	h := &c.Response().Header
+	h.Set("ETag", f.etag)
 	h.Set("Cache-Control", f.cc)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -166,7 +175,12 @@ func add(rel string, body []byte, ctype string) {
 	if ext == ".html" || ext == ".htm" {
 		cc = htmlCacheControl
 	}
-	files[rel] = &file{ctype: ctype, cc: cc, body: body}
+
+	h := fnv.New64a()
+	_, _ = h.Write(body)
+	etag := fmt.Sprintf(`"%016x"`, h.Sum64())
+
+	files[rel] = &file{ctype: ctype, cc: cc, etag: etag, body: body}
 }
 
 func envStr(key, fallback string) string {
