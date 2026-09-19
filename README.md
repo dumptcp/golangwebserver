@@ -1,4 +1,4 @@
-# GoLang Web Server
+# Golang Web Server
 
 Fast golang webserver. run a few commands, and your site is live.
 
