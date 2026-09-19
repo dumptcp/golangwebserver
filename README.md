@@ -1,6 +1,6 @@
 # Golang Web Server
 
-Fast golang webserver. run a few commands, and your site is live.
+A fast static file server written in Golang (Fiberv3/gofiber.io). run a few commands, and your site is live.
 
 ---
 
