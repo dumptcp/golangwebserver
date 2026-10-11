@@ -23,8 +23,8 @@ var (
 )
 
 const (
-	htmlCacheControl  = "public, max-age=60, no-transform"
-	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
+	htmlCacheControl  = "public, max-age=60"
+	assetCacheControl = "public, max-age=31536000, immutable"
 
 	readBufferSize = 16 * 1024
 

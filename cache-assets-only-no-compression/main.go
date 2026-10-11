@@ -24,7 +24,7 @@ var (
 
 const (
 	htmlCacheControl  = "no-cache, must-revalidate"
-	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
+	assetCacheControl = "public, max-age=31536000, immutable"
 
 	readBufferSize = 16 * 1024
 
