@@ -36,7 +36,11 @@ sudo apt install snapd
 sudo snap install go --classic
 ```
 
-You now have Go installed and your system is up to date.
+```bash
+sudo apt install -y build-essential
+```
+
+You now have Go and a C compiler installed and your system is up to date. The C compiler is for the versions with compression: they use the Zstd library, which is written in C.
 
 ---
 
@@ -142,6 +146,8 @@ Start the server:
 sudo go run main.go
 ```
 
+The first start of a version with compression takes a minute or two, because Go builds the Zstd library once. After that it starts right away.
+
 Press `Ctrl+C` to stop it.
 
 ---
@@ -163,7 +169,9 @@ ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
 ---
 
 - This is a **static** server. It serves HTML, CSS, JS, images, and other files. It does **not** run PHP, Python, or any other server-side code.
+- It only answers requests that read a page or a file (`GET` and `HEAD`). A form or script that tries to send data to it (`POST`, `PUT`, `DELETE`, ...) gets `405 Method Not Allowed`.
 - Files are loaded into memory once at startup. After changing anything in `www`, restart the server.
+- If the server does not start and says `build constraints exclude all Go files`, the C compiler is missing. Run `sudo apt install -y build-essential` and start it again.
 - `/about` and `/about/` both open `about/index.html`.
 - To show your own "page not found" page, put a `404.html` in the top of `www`. Inside it, start links to your CSS and images with `/` (for example `/style.css`), because the page is shown at many different addresses.
 - Pages can only load things from your own site unless you allow more. If you use Google Fonts, analytics, a CDN or embeds, see the next section.

@@ -22,10 +22,31 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DataDog/zstd"
 	"github.com/andybalholm/brotli"
 	"github.com/gofiber/fiber/v3"
-	"github.com/klauspost/compress/zstd"
 )
+
+/*
+#include <stdlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
+static void return_large_blocks_when_freed(void) {
+#ifdef __GLIBC__
+	mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+	mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+#endif
+}
+
+static void return_freed_memory_to_the_system(void) {
+#ifdef __GLIBC__
+	malloc_trim(0);
+#endif
+}
+*/
+import "C"
 
 var (
 	siteRoot   = envStr("ROOT", "/root/www")
@@ -33,41 +54,21 @@ var (
 )
 
 const (
-	htmlCacheControl  = "no-cache, must-revalidate" // stored but re-checked every visit, so ETag/304 works
+	htmlCacheControl  = "no-cache, must-revalidate"
 	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
 
-	// Files are compressed ahead of time, never per request, and in two steps so
-	// that a restart never keeps the site offline. Before the server starts
-	// listening, every file is compressed at the fast levels. Then, while the
-	// site is already online, every file is compressed again at the strongest
-	// levels in the background and swapped in. Visitors always get a compressed
-	// file; shortly after startup they get the smallest one possible.
-	zstdFast, zstdBest     = zstd.SpeedDefault, zstd.SpeedBestCompression
+	zstdFast, zstdBest     = 3, 19
 	brotliFast, brotliBest = brotli.DefaultCompression, brotli.BestCompression
 	gzipFast, gzipBest     = gzip.DefaultCompression, gzip.BestCompression
 
-	// Brotli looks for repeats inside a window, given as a power of two (64 KB
-	// to 4 MB here). Each file gets the smallest window that covers it; see
-	// brotliWindow.
 	brotliMinWindow, brotliMaxWindow = 16, 22
 
-	// Compressing leaves a lot of short-lived garbage behind. While the files
-	// are loaded and compressed, Go's collector runs at this setting instead
-	// of its usual 100, which keeps memory use low during that work.
 	startupGCPercent = 25
 
-	// Fiber's default of 4096 answers "431 Request Header Fields Too Large" to
-	// any visitor whose cookies and headers add up to more than 4 KB.
 	readBufferSize = 16 * 1024
 
-	// How long one response may take to reach the visitor. The clock runs for
-	// the whole response, so the old value of 15 seconds cut large files
-	// (video, downloads) off for everyone who needed longer than that.
 	writeTimeout = time.Hour
 
-	// This policy only allows resources from your own site. If your pages load
-	// fonts, scripts, images, video or embeds from another site, add that site
-	// to the matching line (see the README), or they will be blocked.
 	contentSecurityPolicy = "default-src 'self'; " +
 		"base-uri 'self'; " +
 		"form-action 'self'; " +
@@ -89,15 +90,12 @@ const (
 		"screen-wake-lock=(), sync-xhr=(), usb=(), xr-spatial-tracking=()"
 )
 
-// Bits of the index into file.pick: which encodings the client accepts.
 const (
 	acceptZstd = 1 << iota
 	acceptBr
 	acceptGzip
 )
 
-// One way of sending a file: the bytes, and the Content-Encoding they need
-// ("" for the original bytes).
 type variant struct {
 	body []byte
 	enc  string
@@ -105,25 +103,15 @@ type variant struct {
 
 type file struct {
 	ctype, cc, etag string
-	body            []byte // the original bytes
+	body            []byte
 
-	// pick[mask] is the smallest version of the file that a client accepting
-	// the encodings in mask can read. pick[0] is always the original bytes.
-	// The whole table is replaced at once when the background step finishes
-	// a file, so a request sees either the old table or the new one.
 	pick atomic.Pointer[[8]variant]
 
-	// True when the file has no compressed versions (video, audio, images,
-	// PDFs, ...). Only those are served in byte ranges, which is what video
-	// and audio players need for seeking, and what Safari needs to play at all.
 	ranges bool
 }
 
 var files = map[string]*file{}
 
-// Content types for the extensions a website normally uses. Anything not listed
-// falls back to the operating system's MIME table, which a minimal server may
-// not have, so everything a browser is picky about is spelled out here.
 var contentTypes = map[string]string{
 	".html":        "text/html; charset=utf-8",
 	".htm":         "text/html; charset=utf-8",
@@ -183,63 +171,50 @@ var contentTypes = map[string]string{
 }
 
 func main() {
-	// The server logs one more line when the background compression is done.
-	// If its output was piped into another program and that program has
-	// ended, Go's default is to stop the server at the next line it logs.
-	// Ignoring the signal makes that line harmless.
 	signal.Ignore(syscall.SIGPIPE)
 
 	normalGCPercent := debug.SetGCPercent(startupGCPercent)
 
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstdFast))
-	if err != nil {
-		log.Fatalf("zstd init: %v", err)
-	}
-	load(siteRoot, enc)
-	_ = enc.Close()
+	load(siteRoot)
 
 	if len(files) == 0 {
 		log.Fatalf("no files found under %s", siteRoot)
 	}
 	log.Printf("loaded %d files from %s", len(files), siteRoot)
+	C.return_large_blocks_when_freed()
 	go func() {
-		// On a server with a single CPU core, Go runs one thing at a time, so
-		// the compressing would hold up every visitor for a moment, over and
-		// over. With a second thread the operating system can switch to a
-		// visitor at once. It is taken away again when the work is done. With
-		// more cores the setting is left alone, so that Go keeps following
-		// the number of CPUs the server is given.
 		if procs := runtime.GOMAXPROCS(0); procs < 2 {
 			runtime.GOMAXPROCS(2)
 			defer runtime.GOMAXPROCS(procs)
 		}
 		recompress()
 
-		// The compressing is over. Put the collector back to normal and hand
-		// the memory that was only needed for it back to the operating system.
 		debug.SetGCPercent(normalGCPercent)
 		debug.FreeOSMemory()
+		C.return_freed_memory_to_the_system()
 	}()
 
 	app := fiber.New(fiber.Config{
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   writeTimeout,
-		IdleTimeout:    960 * time.Second, // must outlast Cloudflare's 900s connection reuse, or it causes 520s
+		IdleTimeout:    960 * time.Second,
 		ReadBufferSize: readBufferSize,
 	})
 	app.All("/*", serve)
 	log.Printf("listening on %s", listenAddr)
 	log.Fatal(app.Listen(listenAddr, fiber.ListenConfig{
 		DisableStartupMessage: true,
-		// Fiber listens on IPv4 only unless told otherwise. "tcp" accepts IPv4
-		// and IPv6, and still starts on a server that has no IPv6.
-		ListenerNetwork: fiber.NetworkTCP,
+		ListenerNetwork:       fiber.NetworkTCP,
 	}))
 }
 
 func serve(c fiber.Ctx) error {
-	// Fiber gives the raw path, so "/my%20file.html" would never match a file
-	// named "my file.html". Decode it first; keep the raw path if it is malformed.
+	if m := c.Method(); m != fiber.MethodGet && m != fiber.MethodHead {
+		c.Set("Allow", "GET, HEAD")
+		c.Set("Cache-Control", "no-store")
+		return c.SendStatus(fiber.StatusMethodNotAllowed)
+	}
+
 	p := c.Path()
 	if u, err := url.PathUnescape(p); err == nil {
 		p = u
@@ -258,8 +233,6 @@ func serve(c fiber.Ctx) error {
 
 	f := files[key]
 	if f == nil {
-		// "/about" when the site has an "about" folder: send the browser to
-		// "/about/", which is where that folder's index.html is served.
 		if !strings.HasSuffix(p, "/") && files[key+"/index.html"] != nil {
 			c.Set("Location", redirectTarget(p+"/")+query(c))
 			c.Set("Cache-Control", assetCacheControl)
@@ -275,8 +248,6 @@ func serve(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNotModified)
 	}
 
-	// Every client gets the smallest version it said it can read. A client that
-	// sends no Accept-Encoding at all gets the original bytes.
 	v := &f.pick.Load()[acceptMask(c)]
 	body := v.body
 
@@ -284,8 +255,6 @@ func serve(c fiber.Ctx) error {
 	if f.ranges {
 		h.Set("Accept-Ranges", "bytes")
 		if rng := c.Get("Range"); rng != "" && c.Method() == fiber.MethodGet {
-			// If-Range means "only send the part if the file is still this
-			// version"; when it is not, the whole file is sent instead.
 			if ir := c.Get("If-Range"); ir == "" || ir == f.etag {
 				switch start, end, res := parseRange(rng, len(body)); res {
 				case rangeOK:
@@ -313,8 +282,6 @@ func serve(c fiber.Ctx) error {
 	return c.Send(body)
 }
 
-// acceptMask reads which encodings the client accepts, as the index into a
-// file's pick table.
 func acceptMask(c fiber.Ctx) int {
 	mask := 0
 	if ae := c.Get("Accept-Encoding"); ae != "" {
@@ -331,8 +298,6 @@ func acceptMask(c fiber.Ctx) int {
 	return mask
 }
 
-// securityHeaders adds the headers that tell the browser how to protect the
-// visitor. They go on every page, including the 404 page.
 func securityHeaders(c fiber.Ctx) {
 	c.Set("X-Content-Type-Options", "nosniff")
 	c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -342,8 +307,6 @@ func securityHeaders(c fiber.Ctx) {
 	c.Set("Permissions-Policy", permissionsPolicy)
 }
 
-// notFound answers 404. If the site has a 404.html in its top folder, that page
-// is shown; otherwise the visitor gets a plain "Not Found".
 func notFound(c fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store")
 	f := files["404.html"]
@@ -360,18 +323,10 @@ func notFound(c fiber.Ctx) error {
 	return c.Status(fiber.StatusNotFound).Send(v.body)
 }
 
-// redirectTarget turns a decoded directory path into a Location that can only
-// ever point back at this site. Every unusual byte is percent-encoded again, so
-// a browser cannot reinterpret a "\" or a tab as part of the address, and the
-// leading slashes are collapsed to one, so "//other.example/" stays a path on
-// this site instead of becoming another host.
 func redirectTarget(dir string) string {
 	return "/" + strings.TrimLeft((&url.URL{Path: dir}).EscapedPath(), "/")
 }
 
-// query returns the request's query string with its "?", so that a redirect
-// keeps it: "/about?ref=x" goes to "/about/?ref=x". It is passed on only when
-// it is made of plain visible characters; anything else is left out.
 func query(c fiber.Ctx) string {
 	q := c.Request().URI().QueryString()
 	if len(q) == 0 {
@@ -386,15 +341,11 @@ func query(c fiber.Ctx) string {
 }
 
 const (
-	rangeIgnore        = iota // not a single valid byte range: send the whole file
-	rangeOK                   // send bytes start..end
-	rangeUnsatisfiable        // starts past the end of the file: answer 416
+	rangeIgnore = iota
+	rangeOK
+	rangeUnsatisfiable
 )
 
-// parseRange reads a Range header holding one byte range: "bytes=0-99",
-// "bytes=100-" or "bytes=-500" (the last 500 bytes). Anything else, including a
-// list of several ranges, is ignored, which HTTP allows: the client then simply
-// receives the whole file.
 func parseRange(header string, size int) (start, end, result int) {
 	const unit = "bytes="
 	if size == 0 || len(header) < len(unit) || !strings.EqualFold(header[:len(unit)], unit) {
@@ -410,7 +361,7 @@ func parseRange(header string, size int) (start, end, result int) {
 	}
 	first, last = strings.TrimSpace(first), strings.TrimSpace(last)
 
-	if first == "" { // "-N": the last N bytes
+	if first == "" {
 		n, ok := parsePos(last)
 		if !ok {
 			return 0, 0, rangeIgnore
@@ -444,8 +395,6 @@ func parseRange(header string, size int) (start, end, result int) {
 	return start, end, rangeOK
 }
 
-// parsePos parses a plain run of digits. Numbers too large to be a position in
-// any file are capped rather than rejected.
 func parsePos(s string) (int, bool) {
 	if s == "" {
 		return 0, false
@@ -465,9 +414,7 @@ func parsePos(s string) (int, bool) {
 	return n, true
 }
 
-func load(root string, enc *zstd.Encoder) {
-	// WalkDir does not follow symlinks, not even for the folder it starts in.
-	// Resolve that one, so a site folder that is itself a symlink still loads.
+func load(root string) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
@@ -475,8 +422,6 @@ func load(root string, enc *zstd.Encoder) {
 		if err != nil || d == nil {
 			return nil
 		}
-		// Hidden files and folders are left out. The site folder itself is
-		// taken whatever it is called, also when it is given as ".".
 		if path != root && strings.HasPrefix(d.Name(), ".") {
 			if d.IsDir() {
 				return fs.SkipDir
@@ -491,12 +436,12 @@ func load(root string, enc *zstd.Encoder) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
-		add(filepath.ToSlash(rel), body, enc)
+		add(filepath.ToSlash(rel), body)
 		return nil
 	})
 }
 
-func add(rel string, body []byte, enc *zstd.Encoder) {
+func add(rel string, body []byte) {
 	ext := strings.ToLower(filepath.Ext(rel))
 	ctype := contentTypes[ext]
 	if ctype == "" {
@@ -517,7 +462,7 @@ func add(rel string, body []byte, enc *zstd.Encoder) {
 	f := &file{ctype: ctype, cc: cc, etag: etag, body: body}
 	var zs, br, gz []byte
 	if compressible(ctype) {
-		zs = smaller(enc.EncodeAll(body, make([]byte, 0, len(body)/2)), body)
+		zs = smaller(zstdOf(body, zstdFast), body)
 		br = smaller(brotliOf(body, brotliFast), body)
 		gz = smaller(gzipOf(body, gzipFast), body)
 	}
@@ -526,21 +471,8 @@ func add(rel string, body []byte, enc *zstd.Encoder) {
 	files[rel] = f
 }
 
-// recompress is the background step: it compresses every compressible file
-// again at the strongest levels and swaps the result in. It uses half of the
-// CPU cores so the server stays responsive while it runs.
 func recompress() {
 	workers := max(1, runtime.GOMAXPROCS(0)/2)
-	// One encoder that the workers take turns with. At this level each one
-	// needs about 50 MB, and left alone the library sets up one per CPU core.
-	// Sharing it costs little time: Brotli is what takes long here.
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstdBest), zstd.WithEncoderConcurrency(1))
-	if err != nil {
-		log.Printf("zstd init: %v (keeping the fast compression)", err)
-		return
-	}
-	defer enc.Close()
-
 	start := time.Now()
 	work := make(chan *file)
 	var wg sync.WaitGroup
@@ -550,9 +482,7 @@ func recompress() {
 			defer wg.Done()
 			for f := range work {
 				old := f.pick.Load()
-				// Per encoding, keep whichever is smaller: the new result or
-				// the one from startup.
-				zs := smaller(enc.EncodeAll(f.body, make([]byte, 0, len(f.body)/2)), old[acceptZstd].body)
+				zs := smaller(zstdOf(f.body, zstdBest), old[acceptZstd].body)
 				br := smaller(brotliOf(f.body, brotliBest), old[acceptBr].body)
 				gz := smaller(gzipOf(f.body, gzipBest), old[acceptGzip].body)
 				f.pick.Store(pickTable(f.body, orOld(zs, old[acceptZstd]), orOld(br, old[acceptBr]), orOld(gz, old[acceptGzip])))
@@ -571,10 +501,6 @@ func recompress() {
 	log.Printf("recompressed %d files at the strongest levels in %s", n, time.Since(start).Round(time.Millisecond))
 }
 
-// smaller returns compressed only if it is non-empty and smaller than than,
-// otherwise nil. What it returns is a copy that takes exactly its own size in
-// memory: the buffer a compressor writes into is much larger than its result,
-// and would otherwise stay in memory for as long as the server runs.
 func smaller(compressed, than []byte) []byte {
 	if len(compressed) > 0 && len(compressed) < len(than) {
 		return bytes.Clone(compressed)
@@ -582,8 +508,6 @@ func smaller(compressed, than []byte) []byte {
 	return nil
 }
 
-// orOld returns the new compressed bytes, or the ones already in use for that
-// encoding when the new attempt was not an improvement.
 func orOld(compressed []byte, old variant) []byte {
 	if compressed != nil || old.enc == "" {
 		return compressed
@@ -591,13 +515,10 @@ func orOld(compressed []byte, old variant) []byte {
 	return old.body
 }
 
-// pickTable works out, for every combination of encodings a client can accept,
-// which version of the file is smallest. A nil version does not exist.
 func pickTable(body, zs, br, gz []byte) *[8]variant {
 	var t [8]variant
 	for mask := range t {
 		best := variant{body: body}
-		// Ties go to the first one listed: br, then zstd, then gzip.
 		for _, cand := range []struct {
 			bit  int
 			body []byte
@@ -612,9 +533,6 @@ func pickTable(body, zs, br, gz []byte) *[8]variant {
 	return &t
 }
 
-// Text-like formats, plus WebAssembly and uncompressed fonts. Images, video,
-// audio and woff/woff2 fonts are already compressed, so compressing them again
-// would only waste time.
 func compressible(ctype string) bool {
 	return strings.HasPrefix(ctype, "text/") ||
 		strings.Contains(ctype, "javascript") ||
@@ -627,6 +545,14 @@ func compressible(ctype string) bool {
 		strings.Contains(ctype, "application/wasm")
 }
 
+func zstdOf(b []byte, level int) []byte {
+	out, err := zstd.CompressLevel(nil, b, level)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 func brotliOf(b []byte, quality int) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, len(b)/2))
 	w := brotli.NewWriterOptions(buf, brotli.WriterOptions{Quality: quality, LGWin: brotliWindow(len(b))})
@@ -635,9 +561,6 @@ func brotliOf(b []byte, quality int) []byte {
 	return buf.Bytes()
 }
 
-// brotliWindow returns the window for a file of the given size: just large
-// enough to reach back over the whole file. A larger window cannot find
-// anything more and only costs memory, a lot of it at the strongest level.
 func brotliWindow(size int) int {
 	lgwin := brotliMinWindow
 	for lgwin < brotliMaxWindow && 1<<lgwin-16 < size {

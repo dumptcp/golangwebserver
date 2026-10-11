@@ -23,21 +23,13 @@ var (
 )
 
 const (
-	htmlCacheControl  = "no-cache, must-revalidate" // stored but re-checked every visit, so ETag/304 works
+	htmlCacheControl  = "no-cache, must-revalidate"
 	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
 
-	// Fiber's default of 4096 answers "431 Request Header Fields Too Large" to
-	// any visitor whose cookies and headers add up to more than 4 KB.
 	readBufferSize = 16 * 1024
 
-	// How long one response may take to reach the visitor. The clock runs for
-	// the whole response, so the old value of 15 seconds cut large files
-	// (video, downloads) off for everyone who needed longer than that.
 	writeTimeout = time.Hour
 
-	// This policy only allows resources from your own site. If your pages load
-	// fonts, scripts, images, video or embeds from another site, add that site
-	// to the matching line (see the README), or they will be blocked.
 	contentSecurityPolicy = "default-src 'self'; " +
 		"base-uri 'self'; " +
 		"form-action 'self'; " +
@@ -66,9 +58,6 @@ type file struct {
 
 var files = map[string]*file{}
 
-// Content types for the extensions a website normally uses. Anything not listed
-// falls back to the operating system's MIME table, which a minimal server may
-// not have, so everything a browser is picky about is spelled out here.
 var contentTypes = map[string]string{
 	".html":        "text/html; charset=utf-8",
 	".htm":         "text/html; charset=utf-8",
@@ -138,22 +127,24 @@ func main() {
 	app := fiber.New(fiber.Config{
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   writeTimeout,
-		IdleTimeout:    960 * time.Second, // must outlast Cloudflare's 900s connection reuse, or it causes 520s
+		IdleTimeout:    960 * time.Second,
 		ReadBufferSize: readBufferSize,
 	})
 	app.All("/*", serve)
 	log.Printf("listening on %s", listenAddr)
 	log.Fatal(app.Listen(listenAddr, fiber.ListenConfig{
 		DisableStartupMessage: true,
-		// Fiber listens on IPv4 only unless told otherwise. "tcp" accepts IPv4
-		// and IPv6, and still starts on a server that has no IPv6.
-		ListenerNetwork: fiber.NetworkTCP,
+		ListenerNetwork:       fiber.NetworkTCP,
 	}))
 }
 
 func serve(c fiber.Ctx) error {
-	// Fiber gives the raw path, so "/my%20file.html" would never match a file
-	// named "my file.html". Decode it first; keep the raw path if it is malformed.
+	if m := c.Method(); m != fiber.MethodGet && m != fiber.MethodHead {
+		c.Set("Allow", "GET, HEAD")
+		c.Set("Cache-Control", "no-store")
+		return c.SendStatus(fiber.StatusMethodNotAllowed)
+	}
+
 	p := c.Path()
 	if u, err := url.PathUnescape(p); err == nil {
 		p = u
@@ -172,8 +163,6 @@ func serve(c fiber.Ctx) error {
 
 	f := files[key]
 	if f == nil {
-		// "/about" when the site has an "about" folder: send the browser to
-		// "/about/", which is where that folder's index.html is served.
 		if !strings.HasSuffix(p, "/") && files[key+"/index.html"] != nil {
 			c.Set("Location", redirectTarget(p+"/")+query(c))
 			c.Set("Cache-Control", assetCacheControl)
@@ -191,12 +180,8 @@ func serve(c fiber.Ctx) error {
 	body := f.body
 	h := &c.Response().Header
 
-	// Byte ranges: what video and audio players use for seeking, and what
-	// Safari needs to play media at all.
 	h.Set("Accept-Ranges", "bytes")
 	if rng := c.Get("Range"); rng != "" && c.Method() == fiber.MethodGet {
-		// If-Range means "only send the part if the file is still this
-		// version"; when it is not, the whole file is sent instead.
 		if ir := c.Get("If-Range"); ir == "" || ir == f.etag {
 			switch start, end, res := parseRange(rng, len(body)); res {
 			case rangeOK:
@@ -219,8 +204,6 @@ func serve(c fiber.Ctx) error {
 	return c.Send(body)
 }
 
-// securityHeaders adds the headers that tell the browser how to protect the
-// visitor. They go on every page, including the 404 page.
 func securityHeaders(c fiber.Ctx) {
 	c.Set("X-Content-Type-Options", "nosniff")
 	c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -230,8 +213,6 @@ func securityHeaders(c fiber.Ctx) {
 	c.Set("Permissions-Policy", permissionsPolicy)
 }
 
-// notFound answers 404. If the site has a 404.html in its top folder, that page
-// is shown; otherwise the visitor gets a plain "Not Found".
 func notFound(c fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store")
 	f := files["404.html"]
@@ -243,18 +224,10 @@ func notFound(c fiber.Ctx) error {
 	return c.Status(fiber.StatusNotFound).Send(f.body)
 }
 
-// redirectTarget turns a decoded directory path into a Location that can only
-// ever point back at this site. Every unusual byte is percent-encoded again, so
-// a browser cannot reinterpret a "\" or a tab as part of the address, and the
-// leading slashes are collapsed to one, so "//other.example/" stays a path on
-// this site instead of becoming another host.
 func redirectTarget(dir string) string {
 	return "/" + strings.TrimLeft((&url.URL{Path: dir}).EscapedPath(), "/")
 }
 
-// query returns the request's query string with its "?", so that a redirect
-// keeps it: "/about?ref=x" goes to "/about/?ref=x". It is passed on only when
-// it is made of plain visible characters; anything else is left out.
 func query(c fiber.Ctx) string {
 	q := c.Request().URI().QueryString()
 	if len(q) == 0 {
@@ -269,15 +242,11 @@ func query(c fiber.Ctx) string {
 }
 
 const (
-	rangeIgnore        = iota // not a single valid byte range: send the whole file
-	rangeOK                   // send bytes start..end
-	rangeUnsatisfiable        // starts past the end of the file: answer 416
+	rangeIgnore = iota
+	rangeOK
+	rangeUnsatisfiable
 )
 
-// parseRange reads a Range header holding one byte range: "bytes=0-99",
-// "bytes=100-" or "bytes=-500" (the last 500 bytes). Anything else, including a
-// list of several ranges, is ignored, which HTTP allows: the client then simply
-// receives the whole file.
 func parseRange(header string, size int) (start, end, result int) {
 	const unit = "bytes="
 	if size == 0 || len(header) < len(unit) || !strings.EqualFold(header[:len(unit)], unit) {
@@ -293,7 +262,7 @@ func parseRange(header string, size int) (start, end, result int) {
 	}
 	first, last = strings.TrimSpace(first), strings.TrimSpace(last)
 
-	if first == "" { // "-N": the last N bytes
+	if first == "" {
 		n, ok := parsePos(last)
 		if !ok {
 			return 0, 0, rangeIgnore
@@ -327,8 +296,6 @@ func parseRange(header string, size int) (start, end, result int) {
 	return start, end, rangeOK
 }
 
-// parsePos parses a plain run of digits. Numbers too large to be a position in
-// any file are capped rather than rejected.
 func parsePos(s string) (int, bool) {
 	if s == "" {
 		return 0, false
@@ -349,8 +316,6 @@ func parsePos(s string) (int, bool) {
 }
 
 func load(root string) {
-	// WalkDir does not follow symlinks, not even for the folder it starts in.
-	// Resolve that one, so a site folder that is itself a symlink still loads.
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
@@ -358,8 +323,6 @@ func load(root string) {
 		if err != nil || d == nil {
 			return nil
 		}
-		// Hidden files and folders are left out. The site folder itself is
-		// taken whatever it is called, also when it is given as ".".
 		if path != root && strings.HasPrefix(d.Name(), ".") {
 			if d.IsDir() {
 				return fs.SkipDir

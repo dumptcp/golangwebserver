@@ -1,4 +1,3 @@
-# Compiled binaries
 /site
 /*/site
 *.exe
@@ -7,31 +6,24 @@
 *.so
 *.dylib
 
-# Test binaries
 *.test
 
-# Output of the go coverage tool
 *.out
 
-# Go workspace file
 go.work
 go.work.sum
 
-# Dependency directories (if vendoring is ever added)
 vendor/
 
-# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS files
 .DS_Store
 Thumbs.db
 
-# Environment files
 .env
 .env.*
 !.env.example
