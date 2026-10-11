@@ -54,8 +54,8 @@ var (
 )
 
 const (
-	htmlCacheControl  = "public, max-age=60, no-transform"
-	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
+	htmlCacheControl  = "public, max-age=60"
+	assetCacheControl = "public, max-age=31536000, immutable"
 
 	zstdFast, zstdBest     = 3, 19
 	brotliFast, brotliBest = brotli.DefaultCompression, brotli.BestCompression
