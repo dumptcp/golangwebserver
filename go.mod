@@ -3,7 +3,6 @@ module golangwebserver
 go 1.26.0
 
 require (
-	github.com/DataDog/zstd v1.5.7
 	github.com/andybalholm/brotli v1.2.6
 	github.com/gofiber/fiber/v3 v3.5.0
 )

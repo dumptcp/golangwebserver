@@ -22,31 +22,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DataDog/zstd"
 	"github.com/andybalholm/brotli"
 	"github.com/gofiber/fiber/v3"
 )
-
-/*
-#include <stdlib.h>
-#ifdef __GLIBC__
-#include <malloc.h>
-#endif
-
-static void return_large_blocks_when_freed(void) {
-#ifdef __GLIBC__
-	mallopt(M_TRIM_THRESHOLD, 128 * 1024);
-	mallopt(M_MMAP_THRESHOLD, 128 * 1024);
-#endif
-}
-
-static void return_freed_memory_to_the_system(void) {
-#ifdef __GLIBC__
-	malloc_trim(0);
-#endif
-}
-*/
-import "C"
 
 var (
 	siteRoot   = envStr("ROOT", "/root/www")
@@ -57,7 +35,6 @@ const (
 	htmlCacheControl  = "public, max-age=60"
 	assetCacheControl = "public, max-age=31536000, immutable"
 
-	zstdFast, zstdBest     = 3, 19
 	brotliFast, brotliBest = brotli.DefaultCompression, brotli.BestCompression
 	gzipFast, gzipBest     = gzip.DefaultCompression, gzip.BestCompression
 
@@ -91,8 +68,7 @@ const (
 )
 
 const (
-	acceptZstd = 1 << iota
-	acceptBr
+	acceptBr = 1 << iota
 	acceptGzip
 )
 
@@ -105,7 +81,7 @@ type file struct {
 	ctype, cc, etag string
 	body            []byte
 
-	pick atomic.Pointer[[8]variant]
+	pick atomic.Pointer[[4]variant]
 
 	ranges bool
 }
@@ -181,7 +157,6 @@ func main() {
 		log.Fatalf("no files found under %s", siteRoot)
 	}
 	log.Printf("loaded %d files from %s", len(files), siteRoot)
-	C.return_large_blocks_when_freed()
 	go func() {
 		if procs := runtime.GOMAXPROCS(0); procs < 2 {
 			runtime.GOMAXPROCS(2)
@@ -191,7 +166,6 @@ func main() {
 
 		debug.SetGCPercent(normalGCPercent)
 		debug.FreeOSMemory()
-		C.return_freed_memory_to_the_system()
 	}()
 
 	app := fiber.New(fiber.Config{
@@ -285,9 +259,6 @@ func serve(c fiber.Ctx) error {
 func acceptMask(c fiber.Ctx) int {
 	mask := 0
 	if ae := c.Get("Accept-Encoding"); ae != "" {
-		if strings.Contains(ae, "zstd") {
-			mask |= acceptZstd
-		}
 		if strings.Contains(ae, "br") {
 			mask |= acceptBr
 		}
@@ -460,14 +431,13 @@ func add(rel string, body []byte) {
 	etag := fmt.Sprintf(`"%016x"`, h.Sum64())
 
 	f := &file{ctype: ctype, cc: cc, etag: etag, body: body}
-	var zs, br, gz []byte
+	var br, gz []byte
 	if compressible(ctype) {
-		zs = smaller(zstdOf(body, zstdFast), body)
 		br = smaller(brotliOf(body, brotliFast), body)
 		gz = smaller(gzipOf(body, gzipFast), body)
 	}
-	f.pick.Store(pickTable(body, zs, br, gz))
-	f.ranges = zs == nil && br == nil && gz == nil
+	f.pick.Store(pickTable(body, br, gz))
+	f.ranges = br == nil && gz == nil
 	files[rel] = f
 }
 
@@ -482,10 +452,9 @@ func recompress() {
 			defer wg.Done()
 			for f := range work {
 				old := f.pick.Load()
-				zs := smaller(zstdOf(f.body, zstdBest), old[acceptZstd].body)
 				br := smaller(brotliOf(f.body, brotliBest), old[acceptBr].body)
 				gz := smaller(gzipOf(f.body, gzipBest), old[acceptGzip].body)
-				f.pick.Store(pickTable(f.body, orOld(zs, old[acceptZstd]), orOld(br, old[acceptBr]), orOld(gz, old[acceptGzip])))
+				f.pick.Store(pickTable(f.body, orOld(br, old[acceptBr]), orOld(gz, old[acceptGzip])))
 			}
 		}()
 	}
@@ -515,15 +484,15 @@ func orOld(compressed []byte, old variant) []byte {
 	return old.body
 }
 
-func pickTable(body, zs, br, gz []byte) *[8]variant {
-	var t [8]variant
+func pickTable(body, br, gz []byte) *[4]variant {
+	var t [4]variant
 	for mask := range t {
 		best := variant{body: body}
 		for _, cand := range []struct {
 			bit  int
 			body []byte
 			enc  string
-		}{{acceptBr, br, "br"}, {acceptZstd, zs, "zstd"}, {acceptGzip, gz, "gzip"}} {
+		}{{acceptBr, br, "br"}, {acceptGzip, gz, "gzip"}} {
 			if mask&cand.bit != 0 && cand.body != nil && len(cand.body) < len(best.body) {
 				best = variant{body: cand.body, enc: cand.enc}
 			}
@@ -543,14 +512,6 @@ func compressible(ctype string) bool {
 		strings.Contains(ctype, "font/ttf") ||
 		strings.Contains(ctype, "font/otf") ||
 		strings.Contains(ctype, "application/wasm")
-}
-
-func zstdOf(b []byte, level int) []byte {
-	out, err := zstd.CompressLevel(nil, b, level)
-	if err != nil {
-		return nil
-	}
-	return out
 }
 
 func brotliOf(b []byte, quality int) []byte {

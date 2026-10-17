@@ -38,11 +38,7 @@ sudo apt install snapd
 sudo snap install go --classic
 ```
 
-```bash
-sudo apt install -y build-essential
-```
-
-You now have Go and a C compiler installed and your system is up to date. The C compiler is for the versions with compression: they use the Zstd library, which is written in C.
+You now have Go installed and your system is up to date.
 
 ---
 
@@ -62,7 +58,7 @@ Each folder is a complete, standalone server. Pick **one**:
 | `cache-1-minute-no-compression/` | ❌ No | 1 minute | 1 year | Frequent edits, low CPU |
 
 **Legend:**
-- **Compression ✅** = Files are pre-compressed into Zstd, Brotli, and Gzip, and the server answers each request with the smallest version that request can accept. The site is online right away; the strongest compression finishes in the background shortly after.
+- **Compression ✅** = Files are pre-compressed into Brotli and Gzip, and the server answers each request with the smallest version that request can accept. Every browser and device can read at least one of them (Gzip works everywhere), and a request that accepts neither gets the file as-is. Cloudflare always asks your server for Brotli or Gzip, and can send Zstd to visitors from its side. The site is online right away; the strongest compression finishes in the background shortly after.
 - **Compression ❌** = The server sends files as-is and does no compressing itself, so it uses less CPU.
 - **HTML Cache** = How long browsers keep your `index.html`. "None" means every visit gets the latest version.
 - **Asset Cache** = How long browsers keep images, CSS, and JS. "1 year" is standard.
@@ -149,7 +145,7 @@ Start the server:
 sudo go run main.go
 ```
 
-The first start of a version with compression takes a minute or two, because Go builds the Zstd library once. After that it starts right away.
+If you installed `build-essential` for an older version of this server, start it with `sudo CGO_ENABLED=0 go run main.go` instead. Go then builds the server without the C compiler, which uses less memory.
 
 Press `Ctrl+C` to stop it.
 
@@ -174,7 +170,6 @@ ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
 - This is a **static** server. It serves HTML, CSS, JS, images, and other files. It does **not** run PHP, Python, or any other server-side code.
 - It only answers requests that read a page or a file (`GET` and `HEAD`). A form or script that tries to send data to it (`POST`, `PUT`, `DELETE`, ...) gets `405 Method Not Allowed`.
 - Files are loaded into memory once at startup. After changing anything in `www`, restart the server.
-- If the server does not start and says `build constraints exclude all Go files`, the C compiler is missing. Run `sudo apt install -y build-essential` and start it again.
 - `/about` and `/about/` both open `about/index.html`.
 - To show your own "page not found" page, put a `404.html` in the top of `www`. Inside it, start links to your CSS and images with `/` (for example `/style.css`), because the page is shown at many different addresses.
 - Pages can only load things from your own site unless you allow more. If you use Google Fonts, analytics, a CDN or embeds, see the next section.
@@ -235,9 +230,10 @@ Requests per second with 1, 2 and 4 CPU cores:
 - **No failed requests** in over 49 million.
 - **Large files** went out at 12 to 17 GB per second.
 - **1,000 connections open at once:** 243,000 requests per second, 99% of them answered within 4.8 ms.
-- **Memory:** 34 MB with a 21 MB site loaded, and 69 MB with 1,000 connections open.
+- **Memory:** about 31 MB with a 21 MB site loaded, and about 66 MB with 1,000 connections open.
 - **Startup:** online in 0.2 seconds.
 - All eight versions are within 1% of each other.
+- **Re-tested after Zstd was removed:** the old and new version ran side by side on a Linux cloud machine with the same tests. Requests per second stayed about the same (a few tests came out a little faster or slower, within normal run-to-run variation), memory went down by about 3 MB when built without the C compiler (see Step 7), and the built server file got 3 MB smaller (17.5 MB to 14.5 MB). The tables are from the original run; the memory line above includes the 3 MB drop.
 
 **How it was measured:** on one machine (Intel Core Ultra 7 270K Plus, Windows 11, Go 1.27), with the server on 4 cores and the load generator on the other cores. The two were connected directly, with no network in between. HTTP/1.1 with keep-alive over 256 connections (128 for the image, 64 and 32 for the two video tests), 5 seconds per test after a 1 second warm-up, averaged over two runs. The 1 and 2 core tests ran once, for 4 seconds, with 64 and 128 connections, and the other seven versions ran a shorter set of the same tests once. Your numbers will differ: a real server has a network in between, runs Linux, and often has fewer or slower cores.
 
