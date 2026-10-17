@@ -233,7 +233,6 @@ Requests per second with 1, 2 and 4 CPU cores:
 - **Memory:** about 31 MB with a 21 MB site loaded, and about 66 MB with 1,000 connections open.
 - **Startup:** online in 0.2 seconds.
 - All eight versions are within 1% of each other.
-- **Re-tested after Zstd was removed:** the old and new version ran side by side on a Linux cloud machine with the same tests. Requests per second stayed about the same (a few tests came out a little faster or slower, within normal run-to-run variation), memory went down by about 3 MB when built without the C compiler (see Step 7), and the built server file got 3 MB smaller (17.5 MB to 14.5 MB). The tables are from the original run; the memory line above includes the 3 MB drop.
 
 **How it was measured:** on one machine (Intel Core Ultra 7 270K Plus, Windows 11, Go 1.27), with the server on 4 cores and the load generator on the other cores. The two were connected directly, with no network in between. HTTP/1.1 with keep-alive over 256 connections (128 for the image, 64 and 32 for the two video tests), 5 seconds per test after a 1 second warm-up, averaged over two runs. The 1 and 2 core tests ran once, for 4 seconds, with 64 and 128 connections, and the other seven versions ran a shorter set of the same tests once. Your numbers will differ: a real server has a network in between, runs Linux, and often has fewer or slower cores.
 
