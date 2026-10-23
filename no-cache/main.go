@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"mime"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 
 var (
 	siteRoot   = envStr("ROOT", "/root/www")
-	listenAddr = ":" + envStr("PORT", "80")
+	listenAddr = net.JoinHostPort(envStr("HOST", ""), envStr("PORT", "80"))
 )
 
 const (
@@ -49,8 +50,8 @@ const (
 )
 
 type file struct {
-	ctype string
-	body  []byte
+	ctype, cc string
+	body      []byte
 }
 
 var files = map[string]*file{}
@@ -187,7 +188,7 @@ func serve(c fiber.Ctx) error {
 		}
 	}
 
-	h.Set("Cache-Control", noCacheControl)
+	h.Set("Cache-Control", f.cc)
 	securityHeaders(c)
 
 	h.SetContentType(f.ctype)
@@ -342,7 +343,24 @@ func add(rel string, body []byte) {
 		ctype = "application/octet-stream"
 	}
 
-	files[rel] = &file{ctype: ctype, body: body}
+	cc := noCacheControl
+	if !compressible(ctype) {
+		cc += ", no-transform"
+	}
+
+	files[rel] = &file{ctype: ctype, cc: cc, body: body}
+}
+
+func compressible(ctype string) bool {
+	return strings.HasPrefix(ctype, "text/") ||
+		strings.Contains(ctype, "javascript") ||
+		strings.Contains(ctype, "json") ||
+		strings.Contains(ctype, "svg") ||
+		strings.Contains(ctype, "xml") ||
+		strings.Contains(ctype, "x-icon") ||
+		strings.Contains(ctype, "font/ttf") ||
+		strings.Contains(ctype, "font/otf") ||
+		strings.Contains(ctype, "application/wasm")
 }
 
 func envStr(key, fallback string) string {
