@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"mime"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 
 var (
 	siteRoot   = envStr("ROOT", "/root/www")
-	listenAddr = ":" + envStr("PORT", "80")
+	listenAddr = net.JoinHostPort(envStr("HOST", ""), envStr("PORT", "80"))
 )
 
 const (
@@ -351,11 +352,28 @@ func add(rel string, body []byte) {
 		ctype = "application/octet-stream"
 	}
 
+	cc := assetCacheControl
+	if !compressible(ctype) {
+		cc += ", no-transform"
+	}
+
 	h := fnv.New64a()
 	_, _ = h.Write(body)
 	etag := fmt.Sprintf(`"%016x"`, h.Sum64())
 
-	files[rel] = &file{ctype: ctype, cc: assetCacheControl, etag: etag, body: body}
+	files[rel] = &file{ctype: ctype, cc: cc, etag: etag, body: body}
+}
+
+func compressible(ctype string) bool {
+	return strings.HasPrefix(ctype, "text/") ||
+		strings.Contains(ctype, "javascript") ||
+		strings.Contains(ctype, "json") ||
+		strings.Contains(ctype, "svg") ||
+		strings.Contains(ctype, "xml") ||
+		strings.Contains(ctype, "x-icon") ||
+		strings.Contains(ctype, "font/ttf") ||
+		strings.Contains(ctype, "font/otf") ||
+		strings.Contains(ctype, "application/wasm")
 }
 
 func envStr(key, fallback string) string {

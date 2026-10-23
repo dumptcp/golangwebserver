@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"mime"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -28,11 +29,11 @@ import (
 
 var (
 	siteRoot   = envStr("ROOT", "/root/www")
-	listenAddr = ":" + envStr("PORT", "80")
+	listenAddr = net.JoinHostPort(envStr("HOST", ""), envStr("PORT", "80"))
 )
 
 const (
-	assetCacheControl = "public, max-age=31536000, immutable"
+	assetCacheControl = "public, max-age=31536000, immutable, no-transform"
 
 	brotliFast, brotliBest = brotli.DefaultCompression, brotli.BestCompression
 	gzipFast, gzipBest     = gzip.DefaultCompression, gzip.BestCompression
