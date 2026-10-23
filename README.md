@@ -2,7 +2,7 @@
 
 A fast static file server written in Golang ([Fiber v3](https://gofiber.io)). Run a few commands, and your site is live.
 
-**Benchmark:** about 247,000 requests per second on 4 CPU cores, with no failed requests. See [Benchmarks](#benchmarks).
+**Benchmark:** about 786,000 requests per second on 4 CPU cores, with no failed requests. See [Benchmarks](#benchmarks).
 
 ---
 
@@ -227,32 +227,32 @@ Then restart the server.
 
 | Test | Requests per second | Half of responses within | 99% of responses within |
 |---|---|---|---|
-| Small file | 247,000 | 1.0 ms | 1.3 ms |
-| HTML page, compressed (33 KB sent as 5 KB) | 240,000 | 1.1 ms | 1.3 ms |
-| HTML page, uncompressed (33 KB) | 205,000 | 1.3 ms | 1.5 ms |
-| JavaScript file, compressed (269 KB sent as 26 KB) | 210,000 | 1.2 ms | 1.5 ms |
-| File the browser already has (`304 Not Modified`) | 254,000 | 1.0 ms | 1.2 ms |
-| Page not found (`404`) | 246,000 | 1.0 ms | 1.3 ms |
-| Image (120 KB) | 100,000 | 1.3 ms | 1.8 ms |
-| Video, 1 MB piece | 16,500 | 3.9 ms | 7.2 ms |
-| Video, whole 20 MB file | 550 | 62 ms | 154 ms |
+| Small file (1 KB) | 786,000 | 0.30 ms | 2.9 ms |
+| HTML page, compressed (33 KB sent as 3 KB) | 713,000 | 0.33 ms | 3.0 ms |
+| HTML page, uncompressed (33 KB) | 543,000 | 0.44 ms | 3.5 ms |
+| JavaScript file, compressed (269 KB sent as 23 KB) | 571,000 | 0.42 ms | 3.4 ms |
+| File the browser already has (`304 Not Modified`) | 899,000 | 0.26 ms | 2.9 ms |
+| Page not found (`404`) | 773,000 | 0.31 ms | 2.9 ms |
+| Image (120 KB) | 312,000 | 0.34 ms | 1.3 ms |
+| Video, 1 MB piece | 47,800 | 1.1 ms | 4.2 ms |
+| Video, whole 20 MB file | 2,110 | 9.5 ms | 45 ms |
 
 Requests per second with 1, 2 and 4 CPU cores:
 
 | CPU cores | Small file | HTML page, compressed |
 |---|---|---|
-| 1 | 85,300 | 81,500 |
-| 2 | 147,000 | 140,000 |
-| 4 | 247,000 | 240,000 |
+| 1 | 259,000 | 236,000 |
+| 2 | 411,000 | 379,000 |
+| 4 | 784,000 | 710,000 |
 
-- **No failed requests** in over 49 million.
-- **Large files** went out at 12 to 17 GB per second.
-- **1,000 connections open at once:** 243,000 requests per second, 99% of them answered within 4.8 ms.
-- **Memory:** about 31 MB with a 21 MB site loaded, and about 66 MB with 1,000 connections open.
-- **Startup:** online in 0.2 seconds.
-- All eight versions are within 1% of each other.
+- **No failed requests** in over 107 million.
+- **Large files** went out at 38 to 50 GB per second.
+- **1,000 connections open at once:** 745,000 requests per second, 99% of them answered within 2.8 ms.
+- **Memory:** 33 MB with a 20 MB site loaded, and 60 MB with 1,000 connections open.
+- **Startup:** online in 49 milliseconds.
+- All eight versions are within 5% of each other.
 
-**How it was measured:** on one machine (Intel Core Ultra 7 270K Plus, Windows 11, Go 1.27), with the server on 4 cores and the load generator on the other cores. The two were connected directly, with no network in between. HTTP/1.1 with keep-alive over 256 connections (128 for the image, 64 and 32 for the two video tests), 5 seconds per test after a 1 second warm-up, averaged over two runs. The 1 and 2 core tests ran once, for 4 seconds, with 64 and 128 connections, and the other seven versions ran a shorter set of the same tests once. Your numbers will differ: a real server has a network in between, runs Linux, and often has fewer or slower cores.
+**How it was measured:** on one machine (Intel Core Ultra 7 270K Plus, Ubuntu 26.04 in WSL2 on Windows 11, Go 1.27.3), with the server on 4 cores and the load generator (wrk 4.1.0, 12 threads) on 12 other cores. The two were connected directly, with no network in between. HTTP/1.1 with keep-alive over 256 connections (128 for the image, 64 and 32 for the two video tests), 5 seconds per test after a 1 second warm-up, averaged over two runs. The 1 and 2 core tests ran once, for 4 seconds, with 64 and 128 connections, and the other seven versions ran a shorter set of the same tests once. Your numbers will differ: a real server has a network in between and often has fewer or slower cores.
 
 ---
 
