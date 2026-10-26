@@ -2,7 +2,7 @@
 
 A fast static file server written in Golang ([Fiber v3](https://gofiber.io)). Run a few commands, and your site is live.
 
-**Benchmark:** about 786,000 requests per second on 4 CPU cores, with no failed requests. See [Benchmarks](#benchmarks).
+**Benchmark:** about 75,000 requests per second from one CPU core of a 2-CPU DigitalOcean server, with no failed requests. See [Benchmarks](#benchmarks).
 
 ---
 
@@ -58,7 +58,7 @@ Each folder is a complete, standalone server. Pick **one**:
 | `cache-1-minute-no-compression/` | ❌ No | 1 minute | 1 year | Frequent edits, low CPU |
 
 **Legend:**
-- **Compression ✅** = Files are pre-compressed into Brotli and Gzip, and the server answers each request with the smallest version that request can accept. Every browser and device can read at least one of them (Gzip works everywhere), and a request that accepts neither gets the file as-is. Cloudflare always asks your server for Brotli or Gzip and passes it on to visitors unchanged. The site is online right away; the strongest compression finishes in the background shortly after.
+- **Compression ✅** = Text files (HTML, CSS, JS, SVG, JSON, ...) are pre-compressed with Brotli at the strongest level, and the server sends that to every request that accepts Brotli; every other request gets the file as-is. Cloudflare always asks your server for Brotli and passes it on to visitors unchanged; for the few that can't read Brotli, Cloudflare sends the uncompressed file. The site is online right away; the strongest compression finishes in the background shortly after.
 - **Compression ❌** = The server sends files as-is and does no compressing itself, so it uses less CPU at startup.
 - **HTML Cache** = How long browsers keep your `index.html`. "None" means every visit gets the latest version.
 - **Asset Cache** = How long browsers keep images, CSS, and JS. "1 year" is standard.
@@ -155,7 +155,7 @@ sudo go run main.go
 
 If you installed `build-essential` for an older version of this server, start it with `sudo CGO_ENABLED=0 go run main.go` instead. Go then builds the server without the C compiler, which uses less memory.
 
-Press `Ctrl+C` to stop it.
+Press `Ctrl+C` to stop it. The server stops taking new visitors, lets downloads that are already running finish (for up to 30 seconds), then exits. `systemctl stop` and `kill` do the same.
 
 ### Settings
 
@@ -223,36 +223,23 @@ Then restart the server.
 
 ## Benchmarks
 
-`cache-assets-only` with the server limited to 4 CPU cores:
+`cache-all` on a DigitalOcean server with 2 CPUs (AMD EPYC 9555P, Ubuntu 26.04, Go 1.26.0, Fiber v3.6.1, fasthttp v1.77.0), built on the server the way Step 4 describes and serving a real site: one 14 KB page (sent as 3.3 KB with Brotli) and a 2 KB icon. Measured on October 26, 2026.
 
-| Test | Requests per second | Half of responses within | 99% of responses within |
-|---|---|---|---|
-| Small file (1 KB) | 786,000 | 0.30 ms | 2.9 ms |
-| HTML page, compressed (33 KB sent as 3 KB) | 713,000 | 0.33 ms | 3.0 ms |
-| HTML page, uncompressed (33 KB) | 543,000 | 0.44 ms | 3.5 ms |
-| JavaScript file, compressed (269 KB sent as 23 KB) | 571,000 | 0.42 ms | 3.4 ms |
-| File the browser already has (`304 Not Modified`) | 899,000 | 0.26 ms | 2.9 ms |
-| Page not found (`404`) | 773,000 | 0.31 ms | 2.9 ms |
-| Image (120 KB) | 312,000 | 0.34 ms | 1.3 ms |
-| Video, 1 MB piece | 47,800 | 1.1 ms | 4.2 ms |
-| Video, whole 20 MB file | 2,110 | 9.5 ms | 45 ms |
+| Test | Requests per second | Requests per CPU-second | Half of responses within | 99% of responses within |
+|---|---|---|---|---|
+| Home page, Brotli (256 connections) | 75,452 | 76,366 | 3.3 ms | 5.6 ms |
+| `304 Not Modified` (256 connections) | 81,349 | 82,782 | 3.1 ms | 5.6 ms |
+| Both files in turn (256 connections) | 73,915 | 74,963 | 3.4 ms | 5.9 ms |
+| New connection every 10 requests (256 connections) | 56,793 | 59,460 | 2.0 ms | 6.1 ms |
+| Home page, Brotli (1,000 connections) | 66,116 | 66,656 | 15.0 ms | 24.2 ms |
 
-Requests per second with 1, 2 and 4 CPU cores:
+- **Requests per CPU-second** is how many requests one CPU core can answer. Here it is almost the same as the requests per second: the server used all of its CPU core, so these numbers are its limit on one core.
+- **No failed requests** in 31.8 million.
+- **Memory:** 13.5 MB idle, 21.3 MB at most with 1,000 connections open. A connection that is waiting for its next request hands its 128 KB read buffer back.
+- **Against the previous version of this server** on the same machine: about the same with 256 connections (between 7% fewer and the same requests per CPU-second), 16% more with 1,000 connections (that test varied by up to 50% between rounds), and half the memory (43 MB).
+- **Against the Rust versions:** in a run on the same machine earlier the same day, [dumptcp/rustwebserver](https://github.com/dumptcp/rustwebserver) (Actix Web) answered about 20% more requests per CPU-second than this server on the home page test, and [dumptcp/rawrustwebserver](https://github.com/dumptcp/rawrustwebserver) about 30% more.
 
-| CPU cores | Small file | HTML page, compressed |
-|---|---|---|
-| 1 | 259,000 | 236,000 |
-| 2 | 411,000 | 379,000 |
-| 4 | 784,000 | 710,000 |
-
-- **No failed requests** in over 107 million.
-- **Large files** went out at 38 to 50 GB per second.
-- **1,000 connections open at once:** 745,000 requests per second, 99% of them answered within 2.8 ms.
-- **Memory:** 33 MB with a 20 MB site loaded, and 60 MB with 1,000 connections open.
-- **Startup:** online in 49 milliseconds.
-- All eight versions are within 5% of each other.
-
-**How it was measured:** on one machine (Intel Core Ultra 7 270K Plus, Ubuntu 26.04 in WSL2 on Windows 11, Go 1.27.3), with the server on 4 cores and the load generator (wrk 4.1.0, 12 threads) on 12 other cores. The two were connected directly, with no network in between. HTTP/1.1 with keep-alive over 256 connections (128 for the image, 64 and 32 for the two video tests), 5 seconds per test after a 1 second warm-up, averaged over two runs. The 1 and 2 core tests ran once, for 4 seconds, with 64 and 128 connections, and the other seven versions ran a shorter set of the same tests once. Your numbers will differ: a real server has a network in between and often has fewer or slower cores.
+**How it was measured:** the server on CPU 0, the load generator (wrk 4.1.0, one thread) on CPU 1, over the loopback interface. HTTP/1.1 with keep-alive, requests sent the way Cloudflare sends them (`Accept-Encoding: br, gzip`), 15 seconds per test after a 3 second warm-up, 6 rounds over two runs alternating which version went first, averaged. Your numbers will differ: a real server has a network in between, and Cloudflare's cache answers most requests before they reach it.
 
 ---
 
