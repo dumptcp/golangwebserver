@@ -61,6 +61,8 @@ Each folder is a complete, standalone server. Pick **one**:
 | `cache-assets-only-no-compression/` | ❌ No | None (always fresh, revalidated with ETag) | 1 year | Fresh HTML, low CPU |
 | `cache-1-minute-no-compression/` | ❌ No | 1 minute | 1 year | Frequent edits, low CPU |
 
+All eight folders contain the same code. The only difference is the **settings** block at the top of each `main.go`, which sets that version's compression, ETags and cache times.
+
 **Legend:**
 - **Compression ✅** = Text files (HTML, CSS, JS, SVG, JSON, ...) are pre-compressed with Brotli at the strongest level, and the server sends that to every request that accepts Brotli; every other request gets the file as-is. Cloudflare always asks your server for Brotli and passes it on to visitors unchanged; for the few that can't read Brotli, Cloudflare sends the uncompressed file. The site is online right away; the strongest compression finishes in the background shortly after.
 - **Compression ❌** = The server sends files as-is and does no compressing itself, so it uses less CPU at startup.
@@ -130,7 +132,7 @@ Recommended: also turn on **Always Use HTTPS** (SSL/TLS → Edge Certificates), 
 
 Recommended: also turn on **Smart Tiered Cache** (Caching → Tiered Cache). It's free on every plan and makes Cloudflare's data centers fetch files from one another instead of each one asking your server.
 
-Cloudflare caches images, CSS, JS, fonts, video and audio by default, but **not HTML** (it decides by file extension). With `cache-assets-only` that is exactly right: every page is checked with your server (a `304 Not Modified` when nothing changed) and everything else is answered from Cloudflare's cache. If you picked `cache-all` or `cache-1-minute` and want Cloudflare to cache your pages too, add a **Cache Rule** (Caching → Cache Rules) for your site with **Eligible for cache**, Edge TTL **Use cache-control header if present**, and Browser TTL **Respect origin**, so the times this server sends are the ones Cloudflare uses.
+Cloudflare caches images, CSS, JS, fonts, video and audio by default, but **not HTML or JSON** (it decides by file extension). With `cache-assets-only` that is exactly right: every page is checked with your server (a `304 Not Modified` when nothing changed) and everything else is answered from Cloudflare's cache. If you picked `cache-all` or `cache-1-minute` and want Cloudflare to cache your pages too, add a **Cache Rule** (Caching → Cache Rules) for your site with **Eligible for cache**, Edge TTL **Use cache-control header if present**, and Browser TTL **Respect origin**, so the times this server sends are the ones Cloudflare uses. To have Cloudflare cache `.json` files too, edit or add a Cache Rule for **File extension is in** `json` with **Eligible for cache** and Edge TTL **Use cache-control header if present**.
 
 ---
 
@@ -196,16 +198,22 @@ Set these before the command above to change where the server looks and listens 
 
 ## Notes + Tips and Tricks
 
+The server raises its own open-file limit at startup. These can still help (run them before starting the server):
+
+```bash
+ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
+```
+
 To clear nftables when you want:
 
 ```bash
 sudo nft flush ruleset
 ```
 
-Can help gain more performance (run it before starting the server):
+Start from a clean build:
 
 ```bash
-ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
+go clean -cache
 ```
 
 ---
@@ -213,11 +221,14 @@ ulimit -n 999999;ulimit -u unlimited;ulimit -e unlimited;ulimit -r unlimited
 - This is a **static** server. It serves HTML, CSS, JS, images, and other files. It does **not** run PHP, Python, or any other server-side code.
 - It only answers requests that read a page or a file (`GET` and `HEAD`). A form or script that tries to send data to it (`POST`, `PUT`, `DELETE`, ...) gets `405 Method Not Allowed`.
 - Files are loaded into memory once at startup. After changing anything in `www`, restart the server (`Ctrl+C`, then start it again). You only need to rebuild when `main.go` changes.
+- Only one copy can run on a port. If an old copy is still running, a new one stops with `address already in use`, so visitors are never split between an old and a new version of your site.
 - `/about` and `/about/` both open `about/index.html`.
 - To show your own "page not found" page, put a `404.html` in the top of `www`. Inside it, start links to your CSS and images with `/` (for example `/style.css`), because the page is shown at many different addresses.
 - Pages can only load things from your own site unless you allow more. If you use Google Fonts, analytics, a CDN or embeds, see the next section.
-- If you update a file while using `cache-all`, you may need to clear your browser cache or Cloudflare cache to see the change.
+- Images, CSS, JS and every other file that isn't a page are cached for a year in each `cache-*` version (pages too in `cache-all`). When you change one, give it a new name or link to it with `?v=2`, then purge Cloudflare's cache (Caching → Configuration → Purge Everything), or returning visitors keep the old copy.
 - `cache-assets-only` is the safest choice for most people.
+- Every response tells browsers to use HTTPS for a year on your domain **and all its subdomains** (`Strict-Transport-Security` with `includeSubDomains`). Make sure every subdomain works over HTTPS (with Cloudflare proxying them, they do). Otherwise, remove `; includeSubDomains` from `vHSTS` in `main.go`.
+- `cloudflare.conf` lists Cloudflare's addresses as published at [cloudflare.com/ips](https://www.cloudflare.com/ips/). They rarely change, but if Cloudflare adds one, update both lists in the file and load it again.
 
 ---
 
@@ -243,6 +254,21 @@ For example, with Google Fonts the two lines become:
 ```
 
 Then build again (Step 4) and restart the server.
+
+---
+
+## How it differs from the Rust versions
+
+Normal traffic gets the same responses as [dumptcp/rustwebserver](https://github.com/dumptcp/rustwebserver) (Actix Web) and [dumptcp/rawrustwebserver](https://github.com/dumptcp/rawrustwebserver) (no framework): same status codes and headers, same Brotli files, ETags and 304s, ranges, redirects and 404 page. Each of the eight folders was checked side by side with the same folder of both Rust versions: 615 requests per folder (every file of a test site with five kinds of `Accept-Encoding`, as `GET` and `HEAD`, plus revalidation, byte ranges, every method and unusual requests), and 608 got the same answer from all three. The other 7 are requests browsers and Cloudflare never send.
+
+What is different:
+
+- **Header names** are capitalized (`Cache-Control` rather than `cache-control`). HTTP treats them the same.
+- **More than 96 request headers:** answered normally. Both Rust versions answer `431 Request Header Fields Too Large`.
+- **`Expect: 100-continue` and a body on a `GET`:** handled like the Actix Web version: a `100 Continue` line first, and the body is read and ignored. The no-framework version answers directly and refuses bodies.
+- **HTTP/1.0 without keep-alive:** the answer carries `Connection: close`, which the Rust versions leave out. All three close the connection.
+- **A request target without a leading `/`** gets `400`, and **unencoded UTF-8 in a path** is accepted, as in the no-framework version. The Actix Web version does the opposite.
+- **Rare file types:** a type that is not in the server's own list gets its `Content-Type` from Ubuntu's list (`/etc/mime.types`), while the Rust versions use a list built into the program, so some rare types (for example `.psd` or `.iso`) are labeled differently. Every common web file type is in the list, and the same in all three.
 
 ---
 

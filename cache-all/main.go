@@ -118,6 +118,7 @@ var (
 	vCSP             = []byte(contentSecurityPolicy)
 	vPermissions     = []byte(permissionsPolicy)
 	vBr              = []byte("br")
+	vHTTP10          = []byte("HTTP/1.0")
 	vRedirectCC      = []byte(redirectCacheControl)
 	vErrorCC         = []byte(errorCacheControl)
 	vTextPlain       = []byte("text/plain; charset=utf-8")
@@ -163,9 +164,21 @@ var contentTypes = map[string]string{
 	".csv":         "text/csv; charset=utf-8",
 	".md":          "text/markdown; charset=utf-8",
 	".vtt":         "text/vtt; charset=utf-8",
+	".yaml":        "text/x-yaml; charset=utf-8",
+	".yml":         "text/x-yaml; charset=utf-8",
+	".toml":        "text/x-toml; charset=utf-8",
+	".ini":         "text/plain; charset=utf-8",
+	".conf":        "text/plain; charset=utf-8",
+	".cfg":         "text/plain; charset=utf-8",
+	".log":         "text/plain; charset=utf-8",
+	".xslt":        "text/xml; charset=utf-8",
+	".dtd":         "text/xml; charset=utf-8",
+	".vcf":         "text/x-vcard; charset=utf-8",
 	".wasm":        "application/wasm",
 	".pdf":         "application/pdf",
 	".zip":         "application/zip",
+	".tgz":         "application/x-compressed",
+	".rar":         "application/x-rar-compressed",
 
 	".ico":  "image/x-icon",
 	".png":  "image/png",
@@ -188,6 +201,7 @@ var contentTypes = map[string]string{
 	".mp4":  "video/mp4",
 	".m4v":  "video/x-m4v",
 	".mov":  "video/quicktime",
+	".avi":  "video/x-msvideo",
 	".webm": "video/webm",
 	".ogv":  "video/ogg",
 	".3gp":  "video/3gpp",
@@ -204,6 +218,10 @@ var contentTypes = map[string]string{
 	".wav":  "audio/wav",
 	".flac": "audio/flac",
 	".weba": "audio/webm",
+	".mid":  "audio/mid",
+	".midi": "audio/mid",
+	".aif":  "audio/aiff",
+	".aiff": "audio/aiff",
 }
 
 func main() {
@@ -274,6 +292,9 @@ func main() {
 func serve(c fiber.Ctx) error {
 	ctx := c.RequestCtx()
 	req, h := &ctx.Request.Header, &ctx.Response.Header
+	if !req.IsHTTP11() {
+		h.SetProtocol(vHTTP10) // HTTP/1.0 requests get an HTTP/1.0 answer, as in the Rust versions
+	}
 	isGet := req.IsGet()
 	if !isGet && !req.IsHead() {
 		h.SetCanonical(hAllow, vGetHead)
@@ -347,14 +368,21 @@ func serve(c fiber.Ctx) error {
 	if v.enc != nil {
 		h.SetContentEncodingBytes(v.enc)
 	}
-	ctx.Response.SetBodyRaw(body)
+	setBody(ctx, body)
 	return nil
 }
 
 // acceptMask reports whether the request accepts Brotli, per RFC 9110 §12.5.3: codings
 // are case-insensitive, `;q=0` refuses one, and `*` stands for every coding not named.
 func acceptMask(req *fasthttp.RequestHeader) int {
+	if !compression {
+		return 0
+	}
 	ae := req.Peek(fiber.HeaderAcceptEncoding)
+	// What Cloudflare sends on every request; skip parsing it.
+	if string(ae) == "gzip, br" || string(ae) == "br, gzip" {
+		return acceptBr
+	}
 	for _, b := range ae {
 		if (b < ' ' && b != '\t') || b > '~' {
 			return 0 // not a valid header value: send the file as-is
@@ -417,6 +445,15 @@ func plain(ctx *fasthttp.RequestCtx, code int, cc []byte) {
 	}
 }
 
+// setBody hands the response its body. fasthttp leaves Content-Length out of a HEAD
+// answer whose body is empty, so it is set here, as the Rust versions send it.
+func setBody(ctx *fasthttp.RequestCtx, body []byte) {
+	ctx.Response.SetBodyRaw(body)
+	if len(body) == 0 {
+		ctx.Response.Header.SetContentLength(0)
+	}
+}
+
 // onError answers requests that never reach serve: unknown methods get
 // 501 Not Implemented, unreadable requests an empty 400 (or the status fasthttp chose).
 func onError(c fiber.Ctx, err error) error {
@@ -454,7 +491,7 @@ func notFound(ctx *fasthttp.RequestCtx) {
 	if v.enc != nil {
 		h.SetContentEncodingBytes(v.enc)
 	}
-	ctx.Response.SetBodyRaw(v.body)
+	setBody(ctx, v.body)
 }
 
 func redirect(ctx *fasthttp.RequestCtx, dir string) {
