@@ -38,7 +38,7 @@ sudo apt install -y snapd git screen
 sudo snap install go --classic
 ```
 
-Check it worked (this server needs Go 1.26 or newer):
+Check it worked (this server needs Go 1.27 or newer):
 
 ```bash
 go version
