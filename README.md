@@ -2,7 +2,7 @@
 
 A fast static file server written in Golang ([Fiber v3](https://gofiber.io)). Run a few commands, and your site is live.
 
-**Benchmark:** 75,811.7 requests per second for `cache-all` `/` with Brotli at concurrency 256 (0 errors), server pinned to one of two vCPUs on a DigitalOcean droplet, load generator on the other. See [Benchmarks](#benchmarks). An earlier wrk run used a different method and is under [Older results](#older-results).
+**Benchmark:** 76,005 requests per second (home page with Brotli, 256 connections). See [Benchmarks](#benchmarks).
 
 ---
 
@@ -274,91 +274,34 @@ What is different:
 
 ## Benchmarks
 
-Measured **2026-11-08 ~11:58 PM–12:20 AM PT** (America/Los_Angeles; the window runs into November 9) on a DigitalOcean droplet: AMD EPYC 9555P, **2 vCPU**, **8 GB** RAM, Ubuntu 26.04.1 LTS, kernel `7.0.0-43-generic`.
+On a DigitalOcean droplet (AMD EPYC 9555P, 2 CPUs, 8 GB), oha ran 30-second tests of each server's `cache-all` build alone on port 80, at 50 and 256 connections; the load tool shares those CPUs, so the numbers are for comparison.
 
-**Toolchains:** `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `go version go1.27.3 linux/amd64`, load generator `oha 1.16.0`.
+**Requests/sec** (RPS) is how many requests came back each second (higher is better). **Typical latency** is p50, and **slow latency** is p99.
 
-**Code measured:** golangwebserver on the dependency-update branch `grokbot/deps-fasthttp-brotli` (PR #1, SHA `e469dad2c02c5d493702dfb907e7f0583a1de87c`). The comparison also uses [rawrustwebserver](https://github.com/dumptcp/rawrustwebserver) at `56641269adbff12455c8180651664fdc3a692d69` (`grokbot/deps-socket2-lock-refresh`, PR #2) and [rustwebserver](https://github.com/dumptcp/rustwebserver) (Actix) at `ccab53630c232aa270b6f4f3005c97a52837ce17` (`grokbot/deps-actix-lock-refresh`, PR #1).
+[rawrust](https://github.com/dumptcp/rawrustwebserver) is the no-framework Rust server, [actix](https://github.com/dumptcp/rustwebserver) is Actix, and golang is this server.
 
-**Content:** an identical copy of live `/root/www` at `/opt/grokbench/www`.
+### Quick winner
 
-- `index.html` — 14008 bytes plain (~3137–3538 bytes with Brotli, depending on recompression finish)
-- `/assets/main.dca5427cb9.js` — 478 bytes plain (~227 bytes with Brotli)
+Home page with Brotli, 256 connections.
 
-**Variants timed:** `cache-all` and `cache-assets-only` (the README recommended folder). The other six folders share the same engine and only change Cache-Control / compression settings, so they were not timed separately.
+| Server | Requests/sec | Typical latency | Slow latency (p99) | Memory |
+|---|---:|---:|---:|---:|
+| **rawrust** | **82,237** | 3.07 ms | 4.70 ms | 10.9 MB |
+| actix | 76,459 | 3.18 ms | 5.55 ms | 9.8 MB |
+| golang | 76,005 | 3.25 ms | 6.38 ms | 18.5 MB |
 
-**Method:**
+### All numbers
 
-1. Release binaries only. Go: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`. Rust: `cargo build --release --locked`.
-2. One server at a time, `HOST=127.0.0.1 PORT=8081 ROOT=/opt/grokbench/www`, no code patches. Live production `rawstatic` on `:80` was left running and idle.
-3. Server pinned to CPU 0 (`taskset -c 0`). `oha` pinned to CPU 1 (`taskset -c 1`) with `--worker-threads 1`.
-4. Warmup 5s, discarded. Measured **30s** with `-w` (wait for in-flight requests at the deadline). Concurrency **50** and **256**. HTTP/1.1 keep-alive.
-5. `home_br` = `/` with `Accept-Encoding: br`. `home_plain` = `/` with no Accept-Encoding. `asset_br` = `/assets/main.dca5427cb9.js` with Brotli.
-6. Peak RSS is `VmHWM` from `/proc/<pid>/status` after each run.
+Requests per second. Bold is the fastest in that row. Every run had 0 errors.
 
-**Caveat:** the load generator and the server share the 2 vCPUs, so absolute requests per second are generator-limited for the faster engines. Use these figures as a relative ranking. They are not comparable 1:1 with the older wrk numbers below (different tool, duration, and content).
-
-### golangwebserver
-
-| Variant | Test | Conc | RPS | p50 ms | p99 ms | Peak RSS MiB | Errors |
-|---|---|---:|---:|---:|---:|---:|---:|
-| cache-all | home_br | 50 | 78,232.3 | 0.63 | 1.25 | 14.9 | 0 |
-| cache-all | home_br | 256 | 75,811.7 | 3.35 | 6.50 | 18.4 | 0 |
-| cache-all | home_plain | 50 | 77,216.0 | 0.64 | 1.28 | 14.9 | 0 |
-| cache-all | home_plain | 256 | 75,570.8 | 3.36 | 6.37 | 18.6 | 0 |
-| cache-all | asset_br | 50 | 80,912.0 | 0.61 | 1.21 | 14.9 | 0 |
-| cache-all | asset_br | 256 | 78,295.7 | 3.10 | 6.15 | 18.8 | 0 |
-| cache-assets-only | home_br | 50 | 76,833.1 | 0.64 | 1.29 | 15.1 | 0 |
-| cache-assets-only | home_br | 256 | 74,786.8 | 3.27 | 7.49 | 18.4 | 0 |
-| cache-assets-only | home_plain | 50 | 75,172.4 | 0.65 | 1.69 | 15.1 | 0 |
-| cache-assets-only | home_plain | 256 | 76,111.8 | 3.29 | 6.40 | 18.7 | 0 |
-| cache-assets-only | asset_br | 50 | 79,331.8 | 0.61 | 1.47 | 15.1 | 0 |
-| cache-assets-only | asset_br | 256 | 78,029.3 | 3.12 | 6.05 | 18.9 | 0 |
-
-### Comparison — `cache-all` `/` Brotli, concurrency 256
-
-[rawrustwebserver](https://github.com/dumptcp/rawrustwebserver) (no framework), [rustwebserver](https://github.com/dumptcp/rustwebserver) (Actix), and golangwebserver (Fiber). Same run as the table above (`home_br`, concurrency 256).
-
-| Server | RPS | p50 ms | p99 ms | Peak RSS MiB | Errors |
-|---|---:|---:|---:|---:|---:|
-| [rawrustwebserver](https://github.com/dumptcp/rawrustwebserver) (no framework) | 79,241.9 | 3.08 | 4.88 | 10.6 | 0 |
-| [rustwebserver](https://github.com/dumptcp/rustwebserver) (Actix) | 77,847.3 | 3.12 | 4.91 | 9.8 | 0 |
-| golangwebserver (Fiber) | 75,811.7 | 3.35 | 6.50 | 18.4 | 0 |
-
-### Older results
-
-The numbers in this subsection are the previous wrk 4.1.0 writeup. Tool, duration, and content differ from the `oha` run above, so they are not comparable 1:1. They are kept here, unchanged, so the two methodologies are not mixed.
-
-#### No-framework Rust webserver versus Actix Web versus Golang Web Server
-
-`cache-all` of the **no-framework Rust webserver** ([dumptcp/rawrustwebserver](https://github.com/dumptcp/rawrustwebserver)), **Actix Web** ([dumptcp/rustwebserver](https://github.com/dumptcp/rustwebserver)) and the **Golang Web Server** ([dumptcp/golangwebserver](https://github.com/dumptcp/golangwebserver), Fiber v3), on a DigitalOcean server with 2 CPUs (AMD EPYC 9555P, Ubuntu 26.04, Rust 1.99.1, Go 1.27.3). Measured in November 2026.
-
-Each webserver's `cache-all` folder was cleaned and built (`cargo clean && cargo build --release --locked` for the two Rust ones, `go clean -cache` and the build command from the Go README for Go) and started on port 8080, serving a real site: a 10 KB home page (2.0 KB with Brotli) and a 3.9 KB CSS file (1.2 KB with Brotli). Each server was tested and then stopped with Ctrl+C. Each one was started 3 times, in rotating order, and the results were averaged.
-
-**Requests per CPU-second** (higher is better):
-
-| Test | No-framework Rust webserver | Actix Web | Golang Web Server |
-|---|---|---|---|
-| Home page, Brotli | **122,855** | 113,405 | 90,535 |
-| `304 Not Modified` | **131,815** | 126,437 | 97,971 |
-| CSS file, Brotli | **125,468** | 114,456 | 90,576 |
-
-**Requests per second:**
-
-| Test | No-framework Rust webserver | Actix Web | Golang Web Server |
-|---|---|---|---|
-| Home page, Brotli | 108,469 | 107,906 | 89,602 |
-| `304 Not Modified` | 119,911 | 121,291 | 97,085 |
-| CSS file, Brotli | 109,322 | 108,363 | 89,706 |
-
-- **Requests per CPU-second** is how many requests one CPU core can answer. It is the fair comparison here: with only 2 CPUs, the load generator had one of them and could not push the two Rust servers to their limit, which is why their requests per second are so close. The Golang Web Server used all of its CPU core, so its two numbers are almost the same.
-- **Result:** the no-framework Rust webserver answered 4–10% more requests per CPU-second than Actix Web and 35–39% more than the Golang Web Server. Actix Web answered 25–29% more than the Golang Web Server.
-- **Latency:** half of all responses came back in 1.0–1.2 ms with both Rust servers and 2.6–2.8 ms with Go. The slowest 1% took 2.6–3.0 ms (no-framework Rust), 2.5–2.9 ms (Actix Web) and 4.0–4.4 ms (Go).
-- **Memory:** idle, 4.8 MB (no-framework Rust), 5.4 MB (Actix Web) and 12.0 MB (Go). With 1,000 connections open, 26 MB, 22 MB and 34 MB.
-- **Clean build:** 20 seconds (no-framework Rust, 1.9 MB program), 46 seconds (Actix Web, 2.4 MB) and 27 seconds (Go, 10.8 MB).
-- **No failed requests**, and every server stopped cleanly on Ctrl+C every time.
-
-**How it was measured:** the server pinned to CPU 0 (`taskset -c 0`), the load generator (wrk 4.1.0, one thread, 256 connections) on CPU 1, over the loopback interface. HTTP/1.1 with keep-alive, 7 seconds per test after a 2 second warm-up, with `Accept-Encoding: gzip, br`. Your numbers will differ: a real server has a network in between, and Cloudflare's cache answers most requests before they reach it.
+| What | Connections | rawrust | actix | golang |
+|---|---:|---:|---:|---:|
+| Home + Brotli | 50 | **83,516** | 80,438 | 77,276 |
+| Home + Brotli | 256 | **82,237** | 76,459 | 76,005 |
+| Home plain | 50 | **81,625** | 80,782 | 77,165 |
+| Home plain | 256 | **80,985** | 77,126 | 75,559 |
+| JS asset + Brotli | 50 | **85,147** | 82,492 | 81,719 |
+| JS asset + Brotli | 256 | **80,088** | 80,082 | 78,608 |
 
 ---
 
