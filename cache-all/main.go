@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/fs"
 	"log"
 	"math"
@@ -29,8 +30,7 @@ import (
 )
 
 // ================================================================ settings
-// Version: cache-all (hashed files under /assets/ cached for a year, every other file
-// revalidated with its ETag).
+// Version: cache-all (every file cached for a year).
 // This block is the only difference between the eight versions of this server; it
 // matches what the Rust version in the same folder of dumptcp/rustwebserver sends.
 
@@ -45,7 +45,7 @@ const etags = true
 // Cache-Control for files under /assets/ (give them a content hash in their name), and
 // for every other file: HTML, favicon, JSON, robots.txt, ...
 const assetCacheControl = "public, max-age=31536000, immutable, no-transform"
-const otherCacheControl = "no-cache, no-transform"
+const otherCacheControl = "public, max-age=31536000, immutable, no-transform"
 
 // Add `no-transform` only to file types that are already compressed (images, fonts,
 // video, ...), so Cloudflare can still compress text files itself.
@@ -67,12 +67,14 @@ const (
 
 	startupGCPercent = 25
 
-	readBufferSize  = 128 * 1024        // also the largest request head; Cloudflare forwards at least 64 KB
-	readTimeout     = 60 * time.Second  // to receive a whole request
-	idleTimeout     = 960 * time.Second // between requests on a kept-alive connection
-	writeTimeout    = time.Hour         // big downloads to slow visitors
-	shutdownTimeout = 30 * time.Second  // Ctrl+C: finish in-flight requests first
-	maxConnections  = 10_000_000
+	defaultMaxInMemory    = 2 * 1024 * 1024
+	defaultMaxConnections = 4096
+
+	readBufferSize  = 128 * 1024       // also the largest request head; Cloudflare forwards at least 64 KB
+	readTimeout     = 60 * time.Second // to receive a whole request
+	idleTimeout     = 75 * time.Second // between requests on a kept-alive connection
+	writeTimeout    = 60 * time.Second // big downloads to slow visitors
+	shutdownTimeout = 30 * time.Second // Ctrl+C: finish in-flight requests first
 
 	contentSecurityPolicy = "default-src 'self'; " +
 		"base-uri 'self'; " +
@@ -139,12 +141,28 @@ const acceptBr = 1
 
 type file struct {
 	ctype, cc, etag []byte
-	body            []byte
+	body            []byte // nil if the file is served from disk
+	path            string
+	size            int
 
 	pick atomic.Pointer[pickTable]
 
 	ranges bool
 }
+
+var (
+	maxInMemory    = defaultMaxInMemory
+	maxConnections = defaultMaxConnections
+)
+
+// fileStream closes the underlying file after fasthttp finishes sending it.
+type fileStream struct {
+	r io.Reader
+	c io.Closer
+}
+
+func (f fileStream) Read(p []byte) (int, error) { return f.r.Read(p) }
+func (f fileStream) Close() error               { return f.c.Close() }
 
 // files maps a path (without the leading "/") to its file. A folder's index.html is
 // also found under "folder/" (and the top one under ""), so no request builds a key.
@@ -228,9 +246,27 @@ var contentTypes = map[string]string{
 func main() {
 	signal.Ignore(syscall.SIGPIPE)
 
+	maxInMemory = int(envUint("MAX_IN_MEMORY", defaultMaxInMemory))
+	maxConnections = int(envUint("MAX_CONNECTIONS", defaultMaxConnections))
+
 	var lim syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err == nil {
-		log.Printf("open file limit: %d", lim.Cur) // Go raises it to the hard limit itself
+		want := uint64(maxConnections + 512)
+		if want < 8192 {
+			want = 8192
+		}
+		if lim.Max > 0 && lim.Max < want {
+			want = lim.Max
+		}
+		if lim.Cur < want {
+			lim.Cur = want
+			if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+				log.Printf("could not raise open file limit: %v", err)
+			} else if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err == nil {
+				// refreshed
+			}
+		}
+		log.Printf("open file limit: %d", lim.Cur)
 	}
 
 	normalGCPercent := debug.SetGCPercent(startupGCPercent)
@@ -239,7 +275,9 @@ func main() {
 	if len(files) == 0 {
 		log.Fatalf("no files found under %s", siteRoot)
 	}
-	log.Printf("loaded %d files from %s", countFiles(), siteRoot)
+	mem, disk := countLoaded()
+	log.Printf("loaded %d files from %s (%d in memory, %d served from disk)", mem+disk, siteRoot, mem, disk)
+	log.Printf("max in-memory file: %d bytes, max connections: %d", maxInMemory, maxConnections)
 	go func() {
 		if compression {
 			if procs := runtime.GOMAXPROCS(0); procs < 2 {
@@ -257,11 +295,9 @@ func main() {
 		WriteTimeout:   writeTimeout,
 		IdleTimeout:    idleTimeout,
 		ReadBufferSize: readBufferSize,
-		// Keep each connection's read buffer between requests. Handing it back costs a
-		// second read system call on every request (13-16% fewer requests per second)
-		// and saves only about 16 KB per open connection, since unused buffer pages
-		// never take up memory.
-		ReduceMemoryUsage: false,
+		// Return unused read buffers between requests so idle connections cost less RAM
+		// on a small VPS. This is a small throughput trade for much lower memory use.
+		ReduceMemoryUsage: true,
 		Concurrency:       maxConnections,
 		// The handler reads the path as sent; these skip a lowercased copy of it.
 		CaseSensitive: true,
@@ -328,11 +364,15 @@ func serve(c fiber.Ctx) error {
 			h.SetStatusCode(fiber.StatusNotModified)
 			h.SetCanonical(hETag, f.etag)
 			h.SetCanonical(hCacheControl, f.cc)
-			if compression {
+			if compression && f.body != nil {
 				h.SetCanonical(hVary, vAcceptEncoding)
 			}
 			return nil
 		}
+	}
+
+	if f.body == nil {
+		return serveDisk(ctx, f, isGet)
 	}
 
 	v := &f.pick.Load()[acceptMask(req)]
@@ -375,6 +415,58 @@ func serve(c fiber.Ctx) error {
 
 // acceptMask reports whether the request accepts Brotli, per RFC 9110 §12.5.3: codings
 // are case-insensitive, `;q=0` refuses one, and `*` stands for every coding not named.
+
+func serveDisk(ctx *fasthttp.RequestCtx, f *file, isGet bool) error {
+	req, h := &ctx.Request.Header, &ctx.Response.Header
+	start, end := 0, 0
+	if f.size > 0 {
+		end = f.size - 1
+	}
+	code := fiber.StatusOK
+	if f.ranges {
+		h.SetCanonical(hAcceptRanges, vBytes)
+		if rng := req.Peek(fiber.HeaderRange); len(rng) > 0 && isGet {
+			if ir := req.Peek(fiber.HeaderIfRange); len(ir) == 0 || (etags && bytes.Equal(ir, f.etag)) {
+				switch s, e, res := parseRange(rng, f.size); res {
+				case rangeOK:
+					h.SetCanonical(hContentRange, fmt.Appendf(nil, "bytes %d-%d/%d", s, e, f.size))
+					h.SetStatusCode(fiber.StatusPartialContent)
+					start, end, code = s, e, fiber.StatusPartialContent
+				case rangeUnsatisfiable:
+					h.SetCanonical(hContentRange, fmt.Appendf(nil, "bytes */%d", f.size))
+					h.SetStatusMessage(msgRangeNotSatis)
+					plain(ctx, fiber.StatusRequestedRangeNotSatisfiable, vErrorCC)
+					return nil
+				}
+			}
+		}
+	}
+	if code == fiber.StatusOK {
+		h.SetStatusCode(code)
+	}
+	if etags {
+		h.SetCanonical(hETag, f.etag)
+	}
+	h.SetCanonical(hCacheControl, f.cc)
+	securityHeaders(h)
+	h.SetContentTypeBytes(f.ctype)
+	n := 0
+	if f.size > 0 {
+		n = end - start + 1
+	}
+	if !isGet || n == 0 {
+		h.SetContentLength(n)
+		return nil
+	}
+	fh, err := os.Open(f.path)
+	if err != nil {
+		plain(ctx, fiber.StatusNotFound, vErrorCC)
+		return nil
+	}
+	ctx.Response.SetBodyStream(fileStream{r: io.NewSectionReader(fh, int64(start), int64(n)), c: fh}, n)
+	return nil
+}
+
 func acceptMask(req *fasthttp.RequestHeader) int {
 	if !compression {
 		return 0
@@ -478,6 +570,12 @@ func notFound(ctx *fasthttp.RequestCtx) {
 	f := files["404.html"]
 	if f == nil {
 		plain(ctx, fiber.StatusNotFound, vErrorCC)
+		return
+	}
+	if f.body == nil {
+		_ = serveDisk(ctx, f, !ctx.IsHead())
+		ctx.Response.Header.SetStatusCode(fiber.StatusNotFound)
+		ctx.Response.Header.SetCanonical(hCacheControl, vErrorCC)
 		return
 	}
 	v := &f.pick.Load()[acceptMask(&ctx.Request.Header)]
@@ -651,12 +749,25 @@ func load(root string) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		body, err := os.ReadFile(path)
+		info, err := d.Info()
 		if err != nil {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
-		add(filepath.ToSlash(rel), body)
+		rel = filepath.ToSlash(rel)
+		if info.Size() > int64(maxInMemory) {
+			hash, size, err := hashFile(path)
+			if err != nil {
+				return nil
+			}
+			addDisk(rel, path, size, hash)
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		add(rel, body)
 		return nil
 	})
 	for rel, f := range files {
@@ -676,6 +787,47 @@ func countFiles() int {
 		}
 	}
 	return n
+}
+
+func countLoaded() (mem, disk int) {
+	seen := map[*file]bool{}
+	for rel, f := range files {
+		if rel == "" || strings.HasSuffix(rel, "/") || seen[f] {
+			continue
+		}
+		seen[f] = true
+		if f.body == nil {
+			disk++
+		} else {
+			mem++
+		}
+	}
+	return mem, disk
+}
+
+func hashFile(path string) (uint64, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	h := fnv.New64a()
+	buf := make([]byte, 64*1024)
+	n := 0
+	for {
+		c, err := f.Read(buf)
+		if c > 0 {
+			_, _ = h.Write(buf[:c])
+			n += c
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	return h.Sum64(), n, nil
 }
 
 func add(rel string, body []byte) {
@@ -707,6 +859,31 @@ func add(rel string, body []byte) {
 	}
 	f.pick.Store(newPickTable(body, br))
 	f.ranges = br == nil
+	f.size = len(body)
+	files[rel] = f
+}
+
+func addDisk(rel, path string, size int, hash uint64) {
+	ext := strings.ToLower(filepath.Ext(rel))
+	ctype := contentTypes[ext]
+	if ctype == "" {
+		ctype = mime.TypeByExtension(ext)
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+
+	cc := otherCacheControl
+	if strings.HasPrefix(rel, "assets/") {
+		cc = assetCacheControl
+	}
+	if noTransformOnlyForPrecompressedTypes && !compressible(ctype) {
+		cc += ", no-transform"
+	}
+
+	etag := fmt.Sprintf(`"%016x"`, hash)
+	f := &file{ctype: []byte(ctype), cc: []byte(cc), etag: []byte(etag), path: path, size: size, ranges: true}
+	f.pick.Store(newPickTable(nil, nil))
 	files[rel] = f
 }
 
@@ -791,4 +968,15 @@ func envStr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envUint(key string, fallback int) uint64 {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			log.Fatalf("bad %s: %v", key, err)
+		}
+		return n
+	}
+	return uint64(fallback)
 }
