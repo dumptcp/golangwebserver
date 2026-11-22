@@ -53,7 +53,7 @@ Each folder is a complete, standalone server. Pick **one**:
 | Folder | Compression | HTML Cache | Asset Cache | Best For |
 |---|---|---|---|---|
 | `cache-assets-only/` | ✅ Yes | None (always fresh, revalidated with ETag) | 1 year | **Recommended.** Most sites |
-| `cache-all/` | ✅ Yes | None (always fresh, revalidated with ETag) | 1 year for `/assets/`, other files revalidated | Hashed asset names in `/assets/` |
+| `cache-all/` | ✅ Yes | 1 year, immutable | 1 year, immutable | Caches every file, HTML included. Purge Cloudflare after updates |
 | `cache-1-minute/` | ✅ Yes | 1 minute | 1 year | News sites, blogs |
 | `no-cache/` | ❌ No | None | None | Dev, debugging |
 | `no-cache+compression/` | ✅ Yes | None | None | Fresh + small downloads |
@@ -66,8 +66,8 @@ All eight folders contain the same code. The only difference is the **settings**
 **Legend:**
 - **Compression ✅** = Text files (HTML, CSS, JS, SVG, JSON, ...) are pre-compressed with Brotli at the strongest level, and the server sends that to every request that accepts Brotli; every other request gets the file as-is. Cloudflare always asks your server for Brotli and passes it on to visitors unchanged; for the few that can't read Brotli, Cloudflare sends the uncompressed file. The site is online right away; the strongest compression finishes in the background shortly after.
 - **Compression ❌** = The server sends files as-is and does no compressing itself, so it uses less CPU at startup.
-- **HTML Cache** = How long browsers keep your `index.html`. "None" means every visit gets the latest version.
-- **Asset Cache** = How long browsers keep images, CSS, and JS. "1 year" is standard.
+- **HTML Cache** = How long browsers keep your `index.html`. "None" means every visit gets the latest version. "1 year, immutable" means they may keep that exact copy for a year without asking again.
+- **Asset Cache** = How long browsers keep images, CSS, and JS. "1 year" is standard. "1 year, immutable" is the same promise: keep that exact file and do not recheck it.
 - **Video and audio** = Every version supports seeking (byte ranges), which Safari on iPhone, iPad and Mac needs to play media at all.
 - **ETag** = The six `cache-*` folders send an `ETag` with every file and answer `304 Not Modified` (no body) when the browser or Cloudflare already has the current version. The two `no-cache` folders don't, on purpose.
 - **Cloudflare** = Files are sent with `Cache-Control: no-transform` wherever Cloudflare changing them would only hurt, so Cloudflare passes them on exactly as the server sent them:
@@ -132,7 +132,7 @@ Recommended: also turn on **Always Use HTTPS** (SSL/TLS → Edge Certificates), 
 
 Recommended: also turn on **Smart Tiered Cache** (Caching → Tiered Cache). It's free on every plan and makes Cloudflare's data centers fetch files from one another instead of each one asking your server.
 
-Cloudflare caches images, CSS, JS, fonts, video and audio by default, but **not HTML or JSON** (it decides by file extension). With `cache-assets-only` that is exactly right: every page is checked with your server (a `304 Not Modified` when nothing changed) and everything else is answered from Cloudflare's cache. If you picked `cache-1-minute` and want Cloudflare to cache your pages too, add a **Cache Rule** (Caching → Cache Rules) for your site with **Eligible for cache**, Edge TTL **Use cache-control header if present**, and Browser TTL **Respect origin**, so the times this server sends are the ones Cloudflare uses. To have Cloudflare cache `.json` files too, edit or add a Cache Rule for **File extension is in** `json` with **Eligible for cache** and Edge TTL **Use cache-control header if present**.
+Cloudflare caches images, CSS, JS, fonts, video and audio by default, but **not HTML or JSON** (it decides by file extension). With `cache-assets-only` that is exactly right: every page is checked with your server (a `304 Not Modified` when nothing changed) and everything else is answered from Cloudflare's cache. `cache-all` sends `Cache-Control: public, max-age=31536000, immutable, no-transform` on every file, HTML included, so browsers keep each file for a year and do not recheck it. If you picked `cache-all` or `cache-1-minute` and want Cloudflare to cache your pages too, add a **Cache Rule** (Caching → Cache Rules) for your site with **Eligible for cache**, Edge TTL **Use cache-control header if present**, and Browser TTL **Respect origin**, so the times this server sends are the ones Cloudflare uses. With `cache-all`, purge Cloudflare (Caching → Configuration → Purge Everything) after every update, or visitors keep the old page for up to a year. To have Cloudflare cache `.json` files too, edit or add a Cache Rule for **File extension is in** `json` with **Eligible for cache** and Edge TTL **Use cache-control header if present**.
 
 ---
 
@@ -227,7 +227,7 @@ go clean -cache
 - `/about` and `/about/` both open `about/index.html`.
 - To show your own "page not found" page, put a `404.html` in the top of `www`. Inside it, start links to your CSS and images with `/` (for example `/style.css`), because the page is shown at many different addresses.
 - Pages can only load things from your own site unless you allow more. If you use Google Fonts, analytics, a CDN or embeds, see the next section.
-- Images, CSS, JS and every other file that isn't a page are cached for a year in each `cache-*` version (in `cache-all` only files under `/assets/`; everything else there is revalidated with its ETag). When you change one, give it a new name or link to it with `?v=2`, then purge Cloudflare's cache (Caching → Configuration → Purge Everything), or returning visitors keep the old copy.
+- Images, CSS, JS and every other file that isn't a page are cached for a year in each `cache-*` version. `cache-all` caches every file, HTML included, for a year (`immutable`): a browser that already has the file keeps that exact copy and does not ask again until the year is up. Cloudflare does the same for HTML only after the Cache Rule in Step 5. When you change a cached file, give it a new name or link to it with `?v=2`, then purge Cloudflare's cache (Caching → Configuration → Purge Everything), or returning visitors keep the old copy. With `cache-all`, do the same for HTML.
 - `cache-assets-only` is the safest choice for most people.
 - Every response tells browsers to use HTTPS for a year on your domain **and all its subdomains** (`Strict-Transport-Security` with `includeSubDomains`). Make sure every subdomain works over HTTPS (with Cloudflare proxying them, they do). Otherwise, remove `; includeSubDomains` from `vHSTS` in `main.go`.
 - `cloudflare.conf` lists Cloudflare's addresses as published at [cloudflare.com/ips](https://www.cloudflare.com/ips/). They rarely change, but if Cloudflare adds one, update both lists in the file and load it again.
